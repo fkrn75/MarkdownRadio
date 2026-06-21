@@ -13,14 +13,24 @@
 // 모델 저장소 / 파일 매니페스트
 // ─────────────────────────────────────────────────────────────
 /**
- * 1순위 모델 저장소. `Supertone/supertonic`(base) — OnnxSlim 최적화 ONNX +
- * 음성 스타일 M1~M5/F1~F5 + unicode_indexer + tts.json 이 모두 존재함(HF 트리 확인 완료).
- * onnx/ 4개 합계 약 263MB. 한국어는 `<ko>` 언어 태그 + unicode_indexer 로 지원.
+ * 1순위 모델 저장소. `Supertone/supertonic-3` — 31개 언어 지원, **한국어 합성 가능**(1차증거 확정).
+ * onnx/ 4개 합계 약 380MB. 음성 스타일 M1~M5/F1~F5 + unicode_indexer + tts.json 모두 존재.
  *
- * 참고: v3(`Supertone/supertonic-3`)는 "v2-compatible public ONNX assets"라 동일 코드로 호환되지만,
- *   1순위는 voice_styles 가 함께 있는 base 저장소로 고정한다(파일 존재/크기 curl 검증 기준).
+ * ⚠️ 한국어 검증 핵심(왜 base/supertonic 이 아닌가):
+ *   helper.js 의 preprocessText 는 텍스트를 **NFKD 정규화**한다 → 완성형 한글 음절('한', U+D55C)이
+ *   조합형 자모(초성/중성/종성, U+1100~U+11FF)로 분해된다. 따라서 unicode_indexer 는 음절 영역이
+ *   아니라 **조합자모 영역에 인덱스를 가져야** 한글이 토큰화된다.
+ *   - base `Supertone/supertonic`: split="opensource-en"(영어 전용). NFKD 분해 후 "한국어" 8자모 전부
+ *     indexer 값 -1 = 미등록 → **한국어 합성 불가**(처음 채택했다가 진단으로 폐기).
+ *   - v2 `Supertone/supertonic-2`: split="opensource-multilingual". 자모 전부 유효 → 한국어 가능(폴백).
+ *   - v3 `Supertone/supertonic-3`: split="opensource-multilingual". 자모 전부 유효 + 사용자가 공식 데모에서
+ *     한국어 직접 청취(교차검증). tts.json 핵심설정(sample_rate 44100·base_chunk_size 512·latent_dim 24·
+ *     chunk_compress_factor 6)이 v2 와 동일 → helper.js 파이프라인 무수정 호환.
+ *
+ * 폴백 후보(v3 문제 시): MODEL_REPO 를 'Supertone/supertonic-2' 로, MODEL_FILES/VOICE 크기를 v2 값으로
+ *   바꾸면 된다(경로는 동일). v2 onnx 합계 약 251MB.
  */
-export const MODEL_REPO = 'Supertone/supertonic'
+export const MODEL_REPO = 'Supertone/supertonic-3'
 export const MODEL_REVISION = 'main'
 
 /** HF resolve URL 생성기. */
@@ -50,13 +60,14 @@ export interface ModelFile {
  * 합성에 필요한 모델 파일 목록(설정 JSON + 4개 ONNX 세션).
  * 순서 = 다운로드/로딩 순서. helper.loadTextToSpeech 의 로딩 순서를 따른다.
  */
+// approxBytes = Supertone/supertonic-3 의 HF 트리 실측값(2026-06-21). 진행률 분모로만 쓰임.
 export const MODEL_FILES: ModelFile[] = [
-  { path: 'onnx/tts.json', kind: 'json', label: '설정(tts.json)', approxBytes: 8645 },
-  { path: 'onnx/unicode_indexer.json', kind: 'json', label: '유니코드 인덱서', approxBytes: 262134 },
-  { path: 'onnx/duration_predictor.onnx', kind: 'onnx', label: '길이 예측기', approxBytes: 1500789 },
-  { path: 'onnx/text_encoder.onnx', kind: 'onnx', label: '텍스트 인코더', approxBytes: 27348373 },
-  { path: 'onnx/vector_estimator.onnx', kind: 'onnx', label: '벡터 추정기', approxBytes: 132471364 },
-  { path: 'onnx/vocoder.onnx', kind: 'onnx', label: '보코더', approxBytes: 101405066 },
+  { path: 'onnx/tts.json', kind: 'json', label: '설정(tts.json)', approxBytes: 8253 },
+  { path: 'onnx/unicode_indexer.json', kind: 'json', label: '유니코드 인덱서', approxBytes: 277676 },
+  { path: 'onnx/duration_predictor.onnx', kind: 'onnx', label: '길이 예측기', approxBytes: 3700147 },
+  { path: 'onnx/text_encoder.onnx', kind: 'onnx', label: '텍스트 인코더', approxBytes: 36416150 },
+  { path: 'onnx/vector_estimator.onnx', kind: 'onnx', label: '벡터 추정기', approxBytes: 256534781 },
+  { path: 'onnx/vocoder.onnx', kind: 'onnx', label: '보코더', approxBytes: 101424195 },
 ]
 
 /** 모델 다운로드 총 바이트(진행률 분모). */
@@ -66,7 +77,7 @@ export const MODEL_TOTAL_BYTES = MODEL_FILES.reduce((s, f) => s + f.approxBytes,
 // 음성 스타일 카탈로그 (voice style)
 // ─────────────────────────────────────────────────────────────
 /**
- * voice_styles/*.json 한 개당 ~420KB. URI 는 RadioEngine.setVoice(uri) 의 식별자로 쓴다.
+ * voice_styles/*.json 한 개당 ~292KB(v3 기준). URI 는 RadioEngine.setVoice(uri) 의 식별자로 쓴다.
  * URI 규약: `supertonic:M1` 형태(파일명과 1:1). 기본은 남성 M1(블루프린트 지정).
  */
 export interface SupertonicVoice {
