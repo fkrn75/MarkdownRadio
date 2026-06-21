@@ -12,7 +12,7 @@
  * onnxruntime-web/webgpu 서브패스(JSEP 빌드)를 import 해야 브라우저+WebGPU 가 동작한다.
  */
 
-import * as ort from 'onnxruntime-web/webgpu'
+import type * as ort from 'onnxruntime-web'
 import { fetchWithCache, type ProgressFn } from './modelCache'
 import {
   MODEL_FILES,
@@ -26,6 +26,17 @@ import {
   type WorkerRequest,
   type WorkerResponse,
 } from './supertonicProtocol'
+
+// onnxruntime-web 런타임을 동적 로드(webgpu 빌드). 번들이 분리되어 필요 시 로드된다.
+// 사용자 피드백: 모바일에서도 WebGPU 가 잘 동작한다 → 모바일/데스크탑 공통으로 WebGPU 를 우선 시도.
+// (이전 모바일 빈버퍼가 교차출처 격리(COOP/COEP) 부재 때문이었는지 격리 헤더 적용 후 재검증)
+let ortRT: typeof ort
+async function ensureOrt(): Promise<void> {
+  if (ortRT) return
+  ortRT = (await import('onnxruntime-web/webgpu')) as unknown as typeof ort
+  ortRT.env.wasm.numThreads = 1 // asyncify 빌드라 멀티 불가. WebGPU 는 GPU 라 스레드 무관.
+  ortRT.env.wasm.simd = true
+}
 
 // ─────────────────────────────────────────────────────────────
 // 워커 송신 헬퍼(타입 안전)
@@ -170,8 +181,8 @@ function buildStyle(json: VoiceStyleJSON): StyleTensors {
   const dpDims = json.style_dp.dims
   const ttlData = Float32Array.from(flattenDeep(json.style_ttl.data))
   const dpData = Float32Array.from(flattenDeep(json.style_dp.data))
-  const ttl = new ort.Tensor('float32', ttlData, ttlDims as number[])
-  const dp = new ort.Tensor('float32', dpData, dpDims as number[])
+  const ttl = new ortRT.Tensor('float32', ttlData, ttlDims as number[])
+  const dp = new ortRT.Tensor('float32', dpData, dpDims as number[])
   return { ttl, dp }
 }
 
@@ -283,13 +294,13 @@ async function loadModels(repo: string, revision: string): Promise<'webgpu' | 'w
     }
     // 경로 대신 바이트(Uint8Array)로 생성(블루프린트 지정)
     post({ type: 'load-progress', phase: 'session', label: '길이 예측기 세션', ratio: 0.25 })
-    dpOrt = await ort.InferenceSession.create(new Uint8Array(dpBuf), opts)
+    dpOrt = await ortRT.InferenceSession.create(new Uint8Array(dpBuf), opts)
     post({ type: 'load-progress', phase: 'session', label: '텍스트 인코더 세션', ratio: 0.5 })
-    textEncOrt = await ort.InferenceSession.create(new Uint8Array(teBuf), opts)
+    textEncOrt = await ortRT.InferenceSession.create(new Uint8Array(teBuf), opts)
     post({ type: 'load-progress', phase: 'session', label: '벡터 추정기 세션', ratio: 0.75 })
-    vectorEstOrt = await ort.InferenceSession.create(new Uint8Array(veBuf), opts)
+    vectorEstOrt = await ortRT.InferenceSession.create(new Uint8Array(veBuf), opts)
     post({ type: 'load-progress', phase: 'session', label: '보코더 세션', ratio: 1 })
-    vocoderOrt = await ort.InferenceSession.create(new Uint8Array(voBuf), opts)
+    vocoderOrt = await ortRT.InferenceSession.create(new Uint8Array(voBuf), opts)
   }
 
   try {
@@ -397,10 +408,10 @@ async function infer(
   const { textIds, textMask } = processor.call(textList, langList)
 
   const textIdsFlat = BigInt64Array.from(textIds.flat().map((x) => BigInt(x)))
-  const textIdsTensor = new ort.Tensor('int64', textIdsFlat, [bsz, textIds[0].length])
+  const textIdsTensor = new ortRT.Tensor('int64', textIdsFlat, [bsz, textIds[0].length])
 
   const textMaskFlat = Float32Array.from(textMask.flat(2))
-  const textMaskTensor = new ort.Tensor('float32', textMaskFlat, [bsz, 1, textMask[0][0].length])
+  const textMaskTensor = new ortRT.Tensor('float32', textMaskFlat, [bsz, 1, textMask[0][0].length])
 
   // 길이 예측
   const dpOut = await dpOrt.run({
@@ -430,16 +441,16 @@ async function infer(
   )
 
   const latentMaskFlat = Float32Array.from(latentMask.flat(2))
-  const latentMaskTensor = new ort.Tensor('float32', latentMaskFlat, [bsz, 1, latentMask[0][0].length])
+  const latentMaskTensor = new ortRT.Tensor('float32', latentMaskFlat, [bsz, 1, latentMask[0][0].length])
 
-  const totalStepTensor = new ort.Tensor('float32', new Float32Array(bsz).fill(totalStep), [bsz])
+  const totalStepTensor = new ortRT.Tensor('float32', new Float32Array(bsz).fill(totalStep), [bsz])
 
   // denoising 루프(vector_estimator × totalStep)
   for (let step = 0; step < totalStep; step++) {
-    const curStepTensor = new ort.Tensor('float32', new Float32Array(bsz).fill(step), [bsz])
+    const curStepTensor = new ortRT.Tensor('float32', new Float32Array(bsz).fill(step), [bsz])
 
     const xtFlat = Float32Array.from(xt.flat(2))
-    const xtTensor = new ort.Tensor('float32', xtFlat, [bsz, xt[0].length, xt[0][0].length])
+    const xtTensor = new ortRT.Tensor('float32', xtFlat, [bsz, xt[0].length, xt[0][0].length])
 
     const veOut = await vectorEstOrt.run({
       noisy_latent: xtTensor,
@@ -471,7 +482,7 @@ async function infer(
 
   // 파형 생성(보코더)
   const finalXtFlat = Float32Array.from(xt.flat(2))
-  const finalXtTensor = new ort.Tensor('float32', finalXtFlat, [bsz, xt[0].length, xt[0][0].length])
+  const finalXtTensor = new ortRT.Tensor('float32', finalXtFlat, [bsz, xt[0].length, xt[0][0].length])
 
   const voOut = await vocoderOrt.run({ latent: finalXtTensor })
   const wav = Array.from(voOut.wav_tts.data as Float32Array, Number)
@@ -534,6 +545,7 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
 
   if (msg.type === 'load') {
     try {
+      await ensureOrt()
       const backend = await loadModels(msg.repo ?? MODEL_REPO, msg.revision ?? MODEL_REVISION)
       post({ type: 'load-done', sampleRate, backend })
     } catch (e) {
@@ -545,6 +557,7 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
   if (msg.type === 'synth') {
     const { id } = msg
     try {
+      await ensureOrt()
       const { pcm, durationSec } = await synth(msg.text, msg.lang, msg.voiceUri, msg.totalStep, msg.speed)
       // 합성 도중 취소되었으면 결과 폐기
       if (cancelled.has(id)) {

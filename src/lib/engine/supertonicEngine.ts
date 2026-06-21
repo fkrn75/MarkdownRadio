@@ -402,8 +402,22 @@ export class SupertonicEngine implements RadioEngine {
 
     // 합성 결과를 받아 재생(없으면 합성 대기). 현재 세대를 캡처해 stale 콜백 무시.
     const gen = this.playGen
+    const t0 = import.meta.env.DEV ? performance.now() : 0
     void this.ensureSynth(idx)
       .then((entry) => {
+        if (import.meta.env.DEV) {
+          console.info(
+            '[diag] synth idx',
+            idx,
+            '| backend',
+            this.activeBackend,
+            '| buffer',
+            entry?.buffer ? `${entry.buffer.length}smp@${entry.buffer.sampleRate}Hz` : 'NULL/EMPTY',
+            '| wait',
+            Math.round(performance.now() - t0),
+            'ms',
+          )
+        }
         // 대기 사이 흐름이 리셋(점프/음성변경/정지)되었거나 위치가 바뀌었으면 폐기
         if (gen !== this.playGen) return
         if (!this.playing || this.paused || this._position.chunkIndex !== idx) return
@@ -412,7 +426,7 @@ export class SupertonicEngine implements RadioEngine {
           this.advance()
           return
         }
-        this.playBuffer(entry.buffer, idx)
+        void this.playBuffer(entry.buffer, idx)
         // 더블버퍼: 다음 speech 청크 미리 합성
         void this.ensureSynth(this.firstSynthIndexFrom(idx + 1))
       })
@@ -424,10 +438,20 @@ export class SupertonicEngine implements RadioEngine {
   }
 
   /** AudioBuffer 를 소스 노드로 재생하고 onended 에서 advance. */
-  private playBuffer(buffer: AudioBuffer, idx: number): void {
+  private async playBuffer(buffer: AudioBuffer, idx: number): Promise<void> {
     const ctx = this.getCtx()
-    // suspend 상태였다면 재개
-    if (ctx.state === 'suspended') void ctx.resume()
+    // [안드로이드/iOS] suspended 면 resume 이 "완료된 뒤" start 해야 한다.
+    // void resume 후 곧바로 start 하면 resume 미완료 상태로 재생돼 소리가 안 난다(무음).
+    // 특히 모델이 캐시된 2회차부터는 합성이 빨라 이 레이스가 더 잘 터진다.
+    if (ctx.state === 'suspended') {
+      try {
+        await ctx.resume()
+      } catch {
+        /* resume 실패해도 아래 start 는 시도(일부 환경은 그래도 소리가 난다) */
+      }
+    }
+    // resume 대기 사이에 정지/일시정지로 흐름이 바뀌었으면 폐기(유령 재생 방지)
+    if (!this.playing || this.paused) return
 
     const src = ctx.createBufferSource()
     src.buffer = buffer

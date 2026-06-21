@@ -20,6 +20,18 @@ import { VitePWA } from 'vite-plugin-pwa'
 //     - maximumFileSizeToCacheInBytes 5MB 로 캡 → 혹시 매칭되어도 대용량은 제외.
 //     모델은 modelCache.ts 의 자체 IndexedDB 캐시로 관리하므로 SW 가 손대면 중복/용량 폭증.
 export default defineConfig({
+  // 실기 검증(안드로이드)용 임시 노출: cloudflared 터널의 *.trycloudflare.com Host 헤더를
+  // vite dev 의 host 체크가 막지 않도록 허용. (검증 후 제거해도 무방)
+  server: {
+    allowedHosts: ['.trycloudflare.com'],
+    // onnxruntime-web 멀티스레드 WASM(SharedArrayBuffer)을 켜려면 교차출처 격리가 필요하다.
+    // 격리가 없으면 simd-threaded wasm 추론이 빈 버퍼(무음)를 낸다(안드로이드 실측).
+    // credentialless: HuggingFace 등 cross-origin 모델/음성 리소스를 CORP 없이도 허용(+ SAB 활성).
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'credentialless',
+    },
+  },
   plugins: [
     svelte(),
     VitePWA({

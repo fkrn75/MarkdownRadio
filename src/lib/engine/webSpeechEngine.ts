@@ -353,6 +353,16 @@ export class WebSpeechEngine implements RadioEngine {
       return
     }
 
+    // [안드로이드] 음성 목록이 늦게 준비되는 기기 대비: 아직 미선택이면 지금 다시 선택 시도.
+    // (voiceschanged 이전에 play 하면 voice=null 인 채 lang 만으로 발화돼 무음이 될 수 있다)
+    if (!this.voice) {
+      const vs = speechSynthesis.getVoices()
+      if (vs.length > 0) {
+        this.voice = this.selectVoice(vs)
+        this.voicesReady = true
+      }
+    }
+
     const u = new SpeechSynthesisUtterance(text)
     if (this.voice) u.voice = this.voice
     u.lang = this.voice?.lang ?? 'ko-KR'
@@ -395,6 +405,8 @@ export class WebSpeechEngine implements RadioEngine {
     }
 
     try {
+      // [안드로이드/크롬] speechSynthesis 가 내부적으로 paused 로 굳어 있으면 speak 가 무음이 된다 → 먼저 resume.
+      if (speechSynthesis.paused) speechSynthesis.resume()
       speechSynthesis.speak(u)
     } catch (e) {
       console.warn('[WebSpeechEngine] speak 실패, 다음 청크로 진행:', e)
