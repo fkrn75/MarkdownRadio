@@ -67,10 +67,19 @@ function stripEmoji(s: string): string {
  *   별도 조각으로 만든다. 제거된 이모지는 조각 사이의 "진짜 gap"이 되어,
  *   문장 시작 offset 이 자연히 이모지(그리고 뒤따르는 공백, trim 단계가 처리)를 건너뛴다.
  *
- * 전제: text 노드의 value 는 원문 verbatim 이라 value 의 code-unit 인덱스가 원문 오프셋과 1:1.
- *       (이스케이프가 있는 escape 노드는 mdast 에서 별도 text 노드로 분리되므로 여기엔 안 들어온다.)
+ * 전제: text 노드의 value 는 (이모지 외엔) 원문과 거의 1:1 이지만 ⚠️ 완전하진 않다 —
+ *   백슬래시 이스케이프(`\*` `\_` 등)는 remark 가 같은 text 노드 value 에 백슬래시를 "뺀"
+ *   형태로 담는다(value.length < 원문 폭). 따라서 value.length 를 원문 끝 offset 으로 쓰면
+ *   누락된 백슬래시 수만큼 끝 글자가 slice 범위 밖으로 밀려난다.
+ *   → 마지막 평문 런의 srcEnd 는 value.length 가 아니라 노드 실제 끝(nodeEnd)으로 잡아 흡수한다.
+ *     (plain 길이 ≠ 범위 폭이어도 무방 — 불변식은 정규화 후 비교한다.)
  */
-function pushEmojiAwarePieces(value: string, baseOffset: number, out: CleanPiece[]): void {
+function pushEmojiAwarePieces(
+  value: string,
+  baseOffset: number,
+  nodeEnd: number,
+  out: CleanPiece[],
+): void {
   EMOJI_RE.lastIndex = 0
   let runStart = 0 // 현재 평문 런의 value 내 시작 인덱스
   let m: RegExpExecArray | null
@@ -87,9 +96,11 @@ function pushEmojiAwarePieces(value: string, baseOffset: number, out: CleanPiece
     if (m.index === EMOJI_RE.lastIndex) EMOJI_RE.lastIndex++ // 0폭 매치 무한루프 가드
   }
   // 마지막 이모지 뒤(또는 이모지가 없으면 전체) 평문 런.
+  //  srcEnd 는 노드 실제 끝(nodeEnd)으로 — 백슬래시 이스케이프로 줄어든 value.length 차이를 흡수.
+  //  (이스케이프가 없으면 baseOffset+value.length == nodeEnd 라 기존 동작과 동일 → 회귀 없음.)
   if (runStart < value.length) {
     const run = value.slice(runStart)
-    const p = piece(run, baseOffset + runStart, baseOffset + value.length)
+    const p = piece(run, baseOffset + runStart, nodeEnd)
     if (p) out.push(p)
   }
 }
@@ -133,7 +144,8 @@ function collectPhrasing(node: PhrasingContent, opts: RefineOptions, out: CleanP
       const off = nodeOffsets(node)
       if (!off) return
       // 이모지를 단순 제거하지 않고 경계로 쪼개 각 평문 런이 정확한 원문 범위를 갖게 한다(B.1).
-      pushEmojiAwarePieces(node.value, off.start, out)
+      //  off.end 를 넘겨 마지막 런이 백슬래시 이스케이프로 줄어든 폭을 노드 끝까지 흡수하게 한다.
+      pushEmojiAwarePieces(node.value, off.start, off.end, out)
       return
     }
     case 'inlineCode': {

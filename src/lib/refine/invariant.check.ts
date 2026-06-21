@@ -90,6 +90,18 @@ alter table users add column password text;
 
 👍 끝! 🎉 이제 동작합니다. 🙋 질문은 이슈로. 🧠 참고로 🔜 다음 단계는 🗺️ 로드맵 참고.`,
   },
+  {
+    // ⚠️ FN-03 회귀(꺾쇠 오토링크·백슬래시 이스케이프): auditor 실증 위반 2종.
+    //   <https://...> 오토링크는 "링크"로 치환되는데 원문 slice 의 <,> 가 normalize 후 남아
+    //   불일치했고, \* \_ 등 백슬래시 이스케이프는 (a) normalize 가 \ 를 안 지워서,
+    //   (b) value.length(백슬래시 제거) 폭으로 끝 글자가 잘려서 이중으로 어긋났다.
+    name: '오토링크 꺾쇠·백슬래시 이스케이프(FN-03 회귀)',
+    md: `문의는 <https://example.com> 로 메일 주세요.
+
+이것은 \\*강조아님\\* 이고 가격은 1\\.5배이며 \\#해시태그 아님 \\[대괄호\\] 도 그대로입니다.
+
+자세한 건 <https://docs.example.org/guide> 와 \\_언더스코어\\_ 를 참고하세요.`,
+  },
 ]
 
 function preview(s: string, n = 30): string {
