@@ -199,11 +199,14 @@ export interface StoredDocument {
 // ─────────────────────────────────────────────────────────────
 export type ThemePref = 'light' | 'dark' | 'system'
 export type EngineKind = 'webspeech' | 'supertonic'
+/** Supertonic 합성 품질 프리셋 — 엔진에서 totalStep(추론 횟수)로 매핑(빠름5/표준8/고품질12). */
+export type TtsQuality = 'fast' | 'standard' | 'high'
 
 export interface Settings {
   rate: number // 배속(FN-08), 기본 1.0
   theme: ThemePref
   engine: EngineKind // 현재 'webspeech'(부트스트랩). 정체성은 'supertonic'
+  ttsQuality: TtsQuality // Supertonic 합성 품질(totalStep 매핑). 기본 'standard'(=step 8)
   voiceURI?: string // 선택한 Web Speech 음성
   refine: RefineOptions
   chunk: ChunkOptions
@@ -213,6 +216,7 @@ export const DEFAULT_SETTINGS: Settings = {
   rate: 1.0,
   theme: 'system',
   engine: 'webspeech',
+  ttsQuality: 'standard',
   refine: DEFAULT_REFINE_OPTIONS,
   chunk: DEFAULT_CHUNK_OPTIONS,
 }

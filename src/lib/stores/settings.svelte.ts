@@ -81,6 +81,12 @@ export const settingsStore = {
     void persist()
   },
 
+  /** Supertonic 합성 품질 프리셋 저장(실제 totalStep 매핑은 엔진이 수행). */
+  setTtsQuality(q: import('../types').TtsQuality): void {
+    settings.ttsQuality = q
+    void persist()
+  },
+
   /** 정제/청크 옵션 등 임의 필드를 부분 갱신(설정 화면용). */
   patch(partial: Partial<Settings>): void {
     settings = {

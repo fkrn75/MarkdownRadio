@@ -304,11 +304,15 @@ export class WebSpeechEngine implements RadioEngine {
     this.speakFrom(this._position.chunkIndex, 0)
   }
 
-  /** 현재 청크를 같은 위치에서 다시 발화(배속 변경·resume 폴백용). charOffset 유지 시도. */
+  /** 현재 청크를 처음부터 다시 발화(배속 변경·음성 변경·resume 폴백용). */
   private reSpeakCurrent(): void {
     this.cancelSpeech()
     // charOffset 부터 정확히 재개하기는 Web Speech 가 보장하지 못하므로
     // 현재 청크 전체를 처음부터 다시 읽는다(위치=청크 인덱스는 유지).
+    // ⚠️ P2: 처음부터 재발화하므로 charOffset 을 0 으로 동기화한다. 이렇게 하지 않으면
+    // (예: speakFrom 이 !playing 으로 조기 반환하는 경로 등에서) 멈춘 시점의 옛 charOffset 이
+    // 남아 UI 위치/그 시점에 찍는 북마크의 charOffset 이 실제 발화 시작과 어긋난다.
+    this._position = { chunkIndex: this._position.chunkIndex, charOffset: 0 }
     this.speakFrom(this._position.chunkIndex, 0)
   }
 

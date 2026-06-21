@@ -31,6 +31,7 @@ import {
   type WorkerRequest,
   type WorkerResponse,
 } from './supertonicProtocol'
+import { isIOS } from './platform'
 
 export interface EngineDocContext {
   docId: string
@@ -53,6 +54,8 @@ interface SynthEntry {
   speed: number
   /** 합성에 쓰인 voiceUri(음성 변경 감지용) */
   voiceUri: string
+  /** 합성에 쓰인 totalStep(품질 변경 감지용) */
+  totalStep: number
   durationSec: number
 }
 
@@ -86,6 +89,8 @@ export class SupertonicEngine implements RadioEngine {
 
   /** 모델 진행률 외부 구독 콜백 */
   private modelProgressCb: ((p: ModelLoadProgress) => void) | null = null
+  /** 모델 로딩 오류 외부 구독 콜백(UI 재시도 버튼 노출용) */
+  private modelErrorCb: ((msg: string) => void) | null = null
   /** 사용 백엔드(webgpu|wasm) — 로딩 후 채워짐 */
   private backend: 'webgpu' | 'wasm' | null = null
   /** 모델 PCM 샘플레이트(load-done 에서 수신, 보통 44100). AudioBuffer 생성에 사용. */
@@ -141,6 +146,21 @@ export class SupertonicEngine implements RadioEngine {
   /** 모델 다운로드/세션 진행률 구독(UI). load 전에 등록 권장. */
   onModelProgress(cb: ((p: ModelLoadProgress) => void) | null): void {
     this.modelProgressCb = cb
+  }
+
+  /** 모델 로딩 오류 구독(UI). 오류 시 메시지를 받아 재시도 버튼 등을 노출할 수 있다. */
+  onModelError(cb: ((msg: string) => void) | null): void {
+    this.modelErrorCb = cb
+  }
+
+  /**
+   * 모델 로딩 재시도. 직전 로딩이 실패(load-error)한 뒤 호출.
+   * modelReady/loadingPromise 를 리셋하고 ensureModel 을 다시 돌려 워커에 load 를 재요청한다.
+   */
+  retryLoad(): Promise<void> {
+    this.modelReady = false
+    this.loadingPromise = null
+    return this.ensureModel()
   }
 
   /** 사용 중 백엔드(UI 배지용). 로딩 전 null. */
@@ -199,6 +219,12 @@ export class SupertonicEngine implements RadioEngine {
   // ── RadioEngine: play ──────────────────────────────────────
   play(): void {
     if (this.chunks.length === 0) return
+
+    // [iOS] play() 는 사용자 제스처(재생 버튼)에서 호출되므로, 이 시점에 AudioContext 를
+    // 생성·resume 해 두면 iOS 자동재생 차단을 푼다. 모델 로딩(await) 뒤에 resume 하면
+    // 제스처 컨텍스트를 벗어나 차단될 수 있어, 여기서 동기적으로 보장한다.
+    // (플랫폼 무관하게 suspended 면 resume 시도해도 무해 — 일반 브라우저도 안전)
+    this.ensureCtxResumed()
 
     if (this.paused) {
       this.resumeFromPause()
@@ -317,6 +343,28 @@ export class SupertonicEngine implements RadioEngine {
       if (k > this._position.chunkIndex) this.cancelSynthReq(k)
     }
     // 다음 청크 미리 합성(새 배속)
+    if (this.playing) void this.ensureSynth(this.firstSynthIndexFrom(this._position.chunkIndex + 1))
+  }
+
+  // ── 품질(totalStep) 변경 ───────────────────────────────────
+  /**
+   * 합성 품질(denoising totalStep) 변경. clamp 1~30.
+   * 현재값과 같으면 무시. 현재 위치 '이후'의 캐시/진행 합성을 무효화해 새 품질로 재합성을 유도하고,
+   * 재생 중이면 다음 청크를 즉시 재합성 트리거(현재 재생 중인 버퍼는 유지 → 끊김/회귀 방지).
+   * (setRate 와 동일한 보수적 정책: 현재 청크는 건드리지 않음)
+   */
+  setTotalStep(step: number): void {
+    const clamped = Math.max(1, Math.min(Math.round(step), 30))
+    if (clamped === this.totalStep) return
+    this.totalStep = clamped
+    // 현재 청크는 그대로 두고, 이후(prefetch) 캐시 중 품질이 다른 것을 비워 재합성 유도
+    for (const [k, v] of this.synthCache) {
+      if (k > this._position.chunkIndex && v.totalStep !== clamped) this.synthCache.delete(k)
+    }
+    for (const k of [...this.pendingSynth.keys()]) {
+      if (k > this._position.chunkIndex) this.cancelSynthReq(k)
+    }
+    // 재생 중이면 다음 청크 미리 합성(새 품질)
     if (this.playing) void this.ensureSynth(this.firstSynthIndexFrom(this._position.chunkIndex + 1))
   }
 
@@ -461,18 +509,35 @@ export class SupertonicEngine implements RadioEngine {
    */
   private ensureSynth(idx: number): Promise<SynthEntry> {
     if (idx < 0 || idx >= this.chunks.length) {
-      return Promise.resolve({ buffer: null, speed: this.rate, voiceUri: this.voiceURI, durationSec: 0 })
+      return Promise.resolve({
+        buffer: null,
+        speed: this.rate,
+        voiceUri: this.voiceURI,
+        totalStep: this.totalStep,
+        durationSec: 0,
+      })
     }
     const chunk = this.chunks[idx]
     // 무음/빈 청크는 합성 불필요
     if (chunk.kind === 'silence' || !chunk.text || chunk.text.trim().length === 0) {
-      const e: SynthEntry = { buffer: null, speed: this.rate, voiceUri: this.voiceURI, durationSec: 0 }
+      const e: SynthEntry = {
+        buffer: null,
+        speed: this.rate,
+        voiceUri: this.voiceURI,
+        totalStep: this.totalStep,
+        durationSec: 0,
+      }
       return Promise.resolve(e)
     }
 
-    // 캐시 히트(현재 speed/voice 일치)
+    // 캐시 히트(현재 speed/voice/품질 일치)
     const cached = this.synthCache.get(idx)
-    if (cached && cached.speed === this.rate && cached.voiceUri === this.voiceURI) {
+    if (
+      cached &&
+      cached.speed === this.rate &&
+      cached.voiceUri === this.voiceURI &&
+      cached.totalStep === this.totalStep
+    ) {
       return Promise.resolve(cached)
     }
     // 진행 중
@@ -484,7 +549,11 @@ export class SupertonicEngine implements RadioEngine {
     this.pendingSynth.set(idx, promise)
     promise
       .then((entry) => {
-        this.synthCache.set(idx, entry)
+        // ⚠️ P1: 취소된 합성은 buffer=null 로 resolve 된다(cancelSynthReq).
+        // 그걸 캐시에 넣으면 다음에 같은 speed/voice/totalStep 으로 이 청크를 재생할 때
+        // 캐시 히트로 합성을 건너뛰어 '영구 무음'이 된다. 이 청크는 speech(비어있지 않음)
+        // 가 확실하므로, 실제 buffer 가 있는 결과만 캐시한다(취소/이례적 null 은 캐시 제외).
+        if (entry.buffer) this.synthCache.set(idx, entry)
       })
       .catch(() => {
         /* 호출부에서 처리 */
@@ -501,6 +570,7 @@ export class SupertonicEngine implements RadioEngine {
     const id = ++this.reqSeq
     const speed = this.rate
     const voiceUri = this.voiceURI
+    const totalStep = this.totalStep
 
     const p = new Promise<SynthEntry>((resolve, reject) => {
       this.synthResolvers.set(id, {
@@ -516,13 +586,13 @@ export class SupertonicEngine implements RadioEngine {
       text,
       lang: 'ko',
       voiceUri,
-      totalStep: this.totalStep,
+      totalStep,
       speed,
     }
     worker.postMessage(req)
 
-    // 응답에서 PCM → AudioBuffer 변환(speed/voice 메타 포함)
-    return p.then((entry) => ({ ...entry, speed, voiceUri }))
+    // 응답에서 PCM → AudioBuffer 변환(요청 시점의 speed/voice/품질 메타 고정)
+    return p.then((entry) => ({ ...entry, speed, voiceUri, totalStep }))
   }
 
   /** PCM(Float32, sampleRate Hz) → AudioBuffer 변환. */
@@ -556,7 +626,13 @@ export class SupertonicEngine implements RadioEngine {
         this.worker?.postMessage({ type: 'cancel', id } satisfies WorkerRequest)
         this.synthResolvers.delete(id)
         // reject 하지 않고 조용히 폐기(취소는 정상 흐름) — 빈 엔트리로 resolve
-        r.resolve({ buffer: null, speed: this.rate, voiceUri: this.voiceURI, durationSec: 0 })
+        r.resolve({
+          buffer: null,
+          speed: this.rate,
+          voiceUri: this.voiceURI,
+          totalStep: this.totalStep,
+          durationSec: 0,
+        })
       }
     }
     this.pendingSynth.delete(chunkIndex)
@@ -622,6 +698,8 @@ export class SupertonicEngine implements RadioEngine {
         this.modelLoadReject?.(new Error(msg.message))
         this.modelLoadResolve = this.modelLoadReject = null
         this.loadingPromise = null
+        // UI 재시도 버튼 노출용 콜백(retryLoad 로 다시 시도 가능)
+        this.modelErrorCb?.(msg.message)
         return
       case 'synth-done': {
         const r = this.synthResolvers.get(msg.id)
@@ -635,6 +713,7 @@ export class SupertonicEngine implements RadioEngine {
           buffer,
           speed: this.rate,
           voiceUri: this.voiceURI,
+          totalStep: this.totalStep,
           durationSec: msg.durationSec,
         })
         return
@@ -655,6 +734,20 @@ export class SupertonicEngine implements RadioEngine {
       this.ctx = new AudioContext()
     }
     return this.ctx
+  }
+
+  /**
+   * AudioContext 를 생성하고 suspended 면 resume.
+   * play() 진입점(사용자 제스처)에서 호출해 iOS 자동재생 차단을 해제한다.
+   * isIOS() 여부와 무관하게 suspended 상태면 resume 을 시도해도 무해하다.
+   */
+  private ensureCtxResumed(): void {
+    // isIOS()는 로깅/의도 명시용. 실제 동작은 모든 플랫폼에서 suspended면 resume(안전).
+    void isIOS()
+    const ctx = this.getCtx()
+    if (ctx.state === 'suspended') {
+      void ctx.resume().catch(() => {})
+    }
   }
 
   // ── 이벤트 ─────────────────────────────────────────────────

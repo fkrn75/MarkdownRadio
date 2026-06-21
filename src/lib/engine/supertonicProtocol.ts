@@ -9,6 +9,8 @@
  * 원본 파이프라인 출처: supertonic/web/helper.js, main.js (정독 후 포팅).
  */
 
+import type { TtsQuality } from '../types'
+
 // ─────────────────────────────────────────────────────────────
 // 모델 저장소 / 파일 매니페스트
 // ─────────────────────────────────────────────────────────────
@@ -119,10 +121,32 @@ export function resolveVoice(uri: string | null | undefined): SupertonicVoice {
 // 합성 파라미터 기본값
 // ─────────────────────────────────────────────────────────────
 /**
- * denoising 반복 횟수. 원본 데모 기본값은 가변(보통 8~16). 품질↔속도 트레이드오프.
- * 흘려듣기 용도라 너무 크면 느리므로 중간값으로 둔다(지휘자가 청취 후 조정 가능).
+ * TTS 품질 프리셋 → denoising totalStep 매핑.
+ * denoising 반복 횟수는 품질↔속도 트레이드오프(클수록 음질↑·합성 느림).
+ * 원본 데모 기본값은 가변(보통 8~16). 흘려듣기 용도라 standard(8)를 기본으로 둔다.
+ *
+ * ⚠️ 키는 types.ts 의 `TtsQuality`('fast'|'standard'|'high')와 1:1 일치한다.
+ *    Record<TtsQuality, number> 로 선언해 키 누락/오타를 컴파일 타임에 강제한다.
  */
-export const DEFAULT_TOTAL_STEP = 10
+export const QUALITY_STEPS: Record<TtsQuality, number> = { fast: 5, standard: 8, high: 12 }
+
+/** 기본 품질 프리셋. */
+export const DEFAULT_QUALITY_PRESET: TtsQuality = 'standard'
+
+/**
+ * denoising 반복 횟수 기본값. = QUALITY_STEPS[DEFAULT_QUALITY_PRESET] = 8.
+ * (기존 코드가 DEFAULT_TOTAL_STEP 를 참조하므로 심볼은 유지 — 하위호환)
+ * 타입은 number(특정 리터럴로 좁혀지면 setTotalStep 등 가변 대입이 막힘).
+ */
+export const DEFAULT_TOTAL_STEP: number = QUALITY_STEPS[DEFAULT_QUALITY_PRESET]
+
+/** 품질 프리셋 → totalStep 조회(미지정/미지원 시 기본값). */
+export function qualityToStep(quality: string | null | undefined): number {
+  if (quality && quality in QUALITY_STEPS) {
+    return QUALITY_STEPS[quality as TtsQuality]
+  }
+  return DEFAULT_TOTAL_STEP
+}
 
 /** 기본 speed(피치 보존). helper.call 기본 1.05. 우리 setRate 가 이 값을 덮어쓴다. */
 export const DEFAULT_SPEED = 1.0
