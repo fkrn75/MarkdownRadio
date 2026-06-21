@@ -45,7 +45,7 @@
 
 | 모델 | 한국어 | 브라우저 온디바이스 | 라이선스(상업) | 크기 | 품질 | 판정 |
 |------|:---:|---|---|:---:|:---:|:---:|
-| **Supertonic** (Supertone) | ✅ 공식·한국어 샘플 | ✅ **공식 WebGPU/WASM 라이브 데모** + sherpa + transformers.js | 코드 MIT / 모델 OpenRAIL-M (⭕, 제한조항) | int8 ~97MB | **최상 추정** | **🥇 1순위** |
+| **Supertonic** (Supertone) | ✅ 공식·한국어 샘플 | ✅ **공식 WebGPU/WASM 라이브 데모** + sherpa + transformers.js | 코드 MIT / 모델 OpenRAIL-M (⭕, 제한조항) | ~99M params(int8 실파일 크기는 PoC 실측) | **상 추정(실청취 전 미검증)** | **🥇 1순위** |
 | **MeloTTS-Korean** | ✅ 공식 | ⚠️ 원리상 가능, **브라우저 실증 공백** | **MIT** (가장 자유) | INT8 ~45 / FP16 ~85MB | 상 | 🥈 폴백 |
 | **mms-tts-kor** (Meta MMS) | ✅ 공식 | ✅ transformers.js VITS **즉시** | ❌ **CC-BY-NC** | quant 38.4MB | 중하 (로마자 변환) | 프로토용 |
 | **OuteTTS-0.2-500M** | ✅ 공식 | ✅ transformers.js + WebGPU 데모 | ❌ CC-BY-NC | 500M(q4) | 미확인 | 비상업 대안 |
@@ -55,11 +55,11 @@
 
 ### 2.1 Supertonic — 1순위 [확인]
 
-- **한국어**: Supertonic-3 모델카드에 한국어 샘플 직접 게시 (예: 노인 캐릭터 음성 *"혼자 떠나기엔 길이 험하구나..."*). v2부터 한국어 1차 지원, v3는 31개어. **제작사가 한국 음성 AI 전문기업**이라 품질 기대치 최고.
+- **한국어**: Supertonic-3 모델카드에 한국어 샘플 직접 게시 (예: 노인 캐릭터 음성 *"혼자 떠나기엔 길이 험하구나..."*). v2부터 한국어 1차 지원, v3는 31개어. **제작사가 한국 음성 AI 전문기업**이라 기대치는 높으나 **실제 한국어 청취 품질은 PoC 전까지 미검증**.
 - **브라우저**: 공식 `web/`(WebGPU/WASM, onnxruntime-web) + transformers.js 통합. 라이브 데모(`webml-community/Supertonic-TTS-WebGPU`, `Supertone/supertonic-2`)에서 "100% 로컬, 데이터 외부 전송 없음" + **한국어 선택 가능**. sherpa-onnx 공식 int8 패키지도 제공.
 - **라이선스**: 코드 MIT / 모델 **OpenRAIL-M (상업 사용 허용, use-restriction 승계 의무)**. MMS/OuteTTS의 CC-BY-NC보다 결정적 우위.
-- **크기/속도**: int8 ~97MB(~99M params, 44.1kHz). RTF 0.3× (저사양 기기에서도), M1 Mac 1000+ chars/sec.
-- **착수 전 확인 2가지** (차단요소 아님): ① OpenRAIL-M use-restriction 조항 검토 ② 한국어 실청취 품질 PoC.
+- **크기/속도**: ~99M params, 44.1kHz (int8 실파일 크기는 PoC 실측). **RTF 0.3×는 Onyx Boox Go6 e-reader+airplane mode 측정값으로 모바일/데스크탑 브라우저 일반 보장치가 아님(PoC로 재측정)**. M1 Mac 1000+ chars/sec.
+- **착수 전 확인 3가지** (차단요소 아님): ① OpenRAIL-M use-restriction 조항 검토 ② 한국어 실청취 품질 PoC ③ **inference steps(total_steps 기본 8, 범위 5~12)별 품질↔속도 트레이드오프 측정**. RTF는 이 값을 명시해 측정.
 
 ### 2.2 MeloTTS-Korean — 폴백 [확인]
 
@@ -103,6 +103,7 @@
 | **sherpa-onnx-wasm** | VITS 한국어(`vits-mimic3-ko_KO-kss_low`), Supertonic int8 | ❌ (WASM 전용) | ✅ 기본 | iOS 포함 전 브라우저. 멀티스레드 시 COOP/COEP 필요 |
 | ONNX Runtime Web (raw) | 직접 배선 | ✅ | ✅ | 전·후처리(음소화) 직접 구현 → 손많음 |
 | piper-wasm | 한국어 빈약 | 일부 포크 | ✅ | 포크 난립 |
+| **Web Speech API** (SpeechSynthesis) | OS/브라우저 내장 보이스 | — | — | 한국어는 OS/브라우저 내장 보이스에 종속, 보장 아님. **v0 가치검증 부트스트랩 전용.** 정체성 엔진은 Supertonic |
 
 - **권장**: Supertonic을 **transformers.js**(WebGPU 가속)로 메인. iOS/구형 폴백이나 다른 모델 필요 시 **sherpa-onnx-wasm**. → `engine.ts`로 추상화해 교체 가능하게.
 - WebGPU는 한국어 경량 VITS엔 필수 아님(WASM/CPU로 실시간 충분). 트랜스포머형 모델에서만 큰 이득.
@@ -124,7 +125,7 @@
 
 - iOS에서 **Web Audio(AudioContext)는 화면 잠금/백그라운드 시 즉시 suspend** → 청크를 AudioBufferSourceNode로 순차재생하면 잠금화면에서 끊김.
 - **우회**: iOS는 **청크 합성 → 하나의 긴 WAV Blob으로 이어붙여 `<audio src>` 재생**. 단일 HTMLAudioElement는 잠금화면 재생·MediaSession이 (제한적으로) 동작.
-- ⚠️ **한계**: PWA standalone에서 일시정지 30초 후 잠금화면 play 먹통 iOS 버그 보고. WakeLock으로 우회 불가(iOS 미지원). → **완벽한 무한 백그라운드 재생은 iOS 웹에서 보장 불가**. 사용자에게 명시할 것.
+- ✅ **정정**: **WebKit#198277은 `<audio>` 엘리먼트 문제로 iOS 15.4(2022-02)에서 해결됨.** 따라서 '백그라운드 완전 불가'는 과장. **단일 `<audio>` 경로는 잠금화면 재생·MediaSession 동작.** 단 **Web Audio(AudioContext)는 background에서 ambient 취급돼 suspend 잔존**, 일시정지 30초 후 잠금화면 play 먹통 버그 잔존. WakeLock으로 우회 불가(iOS 미지원).
 - PC/Android는 Web Audio 청크 파이프라인으로 정상.
 
 ### 4.5 배속 (피치 보존) [확인]
@@ -164,6 +165,7 @@ bookmark     = { chunkIndex, sourceCharOffset, createdAt }   // IndexedDB 저장
 2. **MeloTTS-Korean ONNX의 브라우저 실행** — onnxruntime-web 이식 + 한국어 G2P. Supertonic 불만족 시.
 3. **코드·영문 혼재 정제 규칙** — 영문 약어·코드블록·URL·표 처리.
 4. **iOS Safari 백그라운드 연속 재생 안정성** — 실기기 테스트.
+5. **PoC 정량 측정 묶음** — 콜드스타트 + RTF(steps 5/8/12 × 기기별) + 백그라운드 생존 + 실파일 크기 + 실청취 A/B. **이 5종 = Supertonic 채택 게이트, 미달 시 MeloTTS 폴백.**
 
 ---
 

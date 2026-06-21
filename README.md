@@ -1,9 +1,10 @@
 # Markdown Radio 📻
 
-> AI 검색 결과·논문·테크 블로그 같은 **한국어 마크다운/텍스트 자료를 성우 톤으로 읽어주는 "라디오"**.
+> AI 검색 결과·논문·테크 블로그 같은 **한국어 마크다운/텍스트 자료를 또렷한 합성음으로 읽어주는 "라디오"**.
 > 귀로 흘려들으며 맥락을 잡고(1단계), 중요한 곳은 북마크해 두었다가, 나중에 눈으로 정독한다(2단계).
+> 음성은 또렷한 정보전달용 중립 합성음이다(성우 더빙·감정연기 아님).
 
-- **완전 무료 · 100% 온디바이스**: TTS 모델이 사용자 브라우저 안에서 직접 돈다. 서버 추론·API 비용 0원.
+- **완전 무료 · 100% 온디바이스**[^free]: TTS 모델이 사용자 브라우저 안에서 직접 돈다. 서버 추론·API 비용 0원.
 - **한국어 중심**: 한국 음성 AI 기업 모델(Supertonic)을 1순위로 채택.
 - **PC + 모바일**: 정적 PWA로 배포, 홈 화면에 추가해 라디오처럼 청취.
 
@@ -14,7 +15,7 @@
 | 항목 | 결정 | 근거 |
 |------|------|------|
 | 실행 방식 | **경로 A — 완전 온디바이스·무료** | 사용자 확정. 비용 0원·오프라인·프라이버시 |
-| TTS 모델 | **Supertonic** (1순위) / MeloTTS-Korean (폴백) | 한국어 품질 + 브라우저 실행 공식 입증 + 경량 |
+| TTS 모델 | **Supertonic**(온디바이스 1순위, PoC 게이트 통과 시 확정) / MeloTTS-Korean 폴백. 가치검증용 부트스트랩은 브라우저 내장 Web Speech 가능 | 한국어 품질 + 브라우저 실행 공식 입증 + 경량 |
 | 프레임워크 | **Vite + Svelte + TypeScript** | 경량 번들, 정적 빌드 |
 | TTS 런타임 | **transformers.js** (WebGPU) / **sherpa-onnx-wasm** (전 브라우저) | 모델별 교체 가능하게 추상화 |
 | 모델 캐싱 | **IndexedDB** (1회 다운로드 후 오프라인) | iOS 캐시 만료 대응 |
@@ -51,8 +52,8 @@
 
 ```
 Vite + Svelte + TypeScript
- ├─ TTS 런타임: @huggingface/transformers (WebGPU) │ sherpa-onnx-wasm (WASM 폴백)
- ├─ 모델: Supertonic (int8 ~97MB) │ MeloTTS-Korean (폴백)
+ ├─ TTS 런타임: @huggingface/transformers (WebGPU, Supertonic 메인) │ sherpa-onnx-wasm (WASM 폴백) │ Web Speech (부트스트랩)
+ ├─ 모델: Supertonic (~99M params, 실파일 크기는 PoC 실측) │ MeloTTS-Korean (폴백)
  ├─ 합성: Web Worker + 다음 청크 선행 프리페치
  ├─ 재생: Web Audio 큐 (PC/Android) │ 이어붙인 WAV→<audio> (iOS)
  ├─ 저장: IndexedDB (모델·문서·북마크) + Cache API (앱셸)
@@ -68,5 +69,7 @@ Vite + Svelte + TypeScript
 - ⚠️ MMS-tts-kor은 CC-BY-NC(상업 불가) — 빠른 프로토타입에만 사용
 
 ---
+
+[^free]: "완전 무료 · 100% 온디바이스"는 제품의 **최종 지향**이다. 초기 가치검증 단계에서는 브라우저 내장 Web Speech를 임시 부트스트랩 경로로 쓸 수 있으며, 온디바이스 Supertonic이 PoC 게이트를 통과하면 그것으로 확정한다.
 
 _생성: 2026-06-21 · 조사 기반: deep-research(110 에이전트) + 모델/구현 정밀 조사 2건_
