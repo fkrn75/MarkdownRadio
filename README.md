@@ -32,6 +32,7 @@
 | [docs/02-prd.md](docs/02-prd.md) | **기획서(PRD)** — 비전, 사용자, 가치, 범위, 마일스톤 |
 | [docs/03-functional-spec.md](docs/03-functional-spec.md) | **세부 기능명세서** — 기능별 동작·입출력·데이터 모델·엣지케이스 |
 | [docs/04-checklist.md](docs/04-checklist.md) | **구현 체크리스트** — Phase 0~10 단계별 세분화 태스크 |
+| [docs/05-deploy-cloudflare.md](docs/05-deploy-cloudflare.md) | **배포 가이드** — Cloudflare Pages 연결 절차·빌드 설정·COOP/COEP 주의 |
 
 ---
 
