@@ -9,12 +9,20 @@
    * 이렇게 하면 탭(청취/정독)을 전환해 Player가 언마운트돼도 정독뷰 동기 하이라이트가 유지된다.
    */
   import { buildChunks } from './lib/refine'
-  import { createEngine } from './lib/engine'
+  import { createEngine, SupertonicEngine, type ModelLoadProgress } from './lib/engine'
   import { hashText, logEvent } from './lib/instrumentation'
   import { settingsStore } from './lib/stores/settings.svelte'
   import { libraryStore } from './lib/stores/library.svelte'
   import { addBookmark, listBookmarks, deleteBookmark, getDocument } from './lib/db/idb'
-  import type { Bookmark, Chunk, EnginePosition, RawDocument, StoredDocument } from './lib/types'
+  import type {
+    Bookmark,
+    Chunk,
+    EnginePosition,
+    EngineKind,
+    RadioEngine,
+    RawDocument,
+    StoredDocument,
+  } from './lib/types'
   import Uploader from './components/Uploader.svelte'
   import Library from './components/Library.svelte'
   import Player from './components/Player.svelte'
@@ -27,8 +35,10 @@
   let view = $state<View>('home')
   let tab = $state<Tab>('listen')
 
-  // 단일 엔진 인스턴스 재사용(문서 전환은 load 로 처리)
-  const engine = createEngine()
+  // 엔진 인스턴스(설정에 따라 webspeech/supertonic). 전환 시 재생성.
+  let engine = $state<RadioEngine>(createEngine(settingsStore.value.engine))
+  // Supertonic 모델 다운로드/로딩 진행률(UI 배너용)
+  let modelProgress = $state<ModelLoadProgress | null>(null)
 
   let curDoc = $state<StoredDocument | null>(null)
   let chunks = $state<Chunk[]>([])
@@ -46,6 +56,36 @@
     engine.on('chunkChange', onChange)
     return () => engine.off('chunkChange', onChange)
   })
+
+  // 설정의 음성(voiceURI)을 엔진에 반영(없으면 null = 남성 우선 기본)
+  $effect(() => {
+    engine.setVoice?.(settingsStore.value.voiceURI ?? null)
+  })
+
+  // Supertonic 모델 다운로드/로딩 진행률 구독(엔진 교체 시 자동 재구독)
+  $effect(() => {
+    const e = engine
+    if (e instanceof SupertonicEngine) {
+      e.onModelProgress((p) => (modelProgress = p))
+      return () => e.onModelProgress(null)
+    }
+  })
+
+  /** 엔진 종류 전환(기본 webspeech ↔ 온디바이스 supertonic) */
+  async function setEngineKind(kind: EngineKind): Promise<void> {
+    if (kind === settingsStore.value.engine) return
+    engine.stop()
+    if (engine instanceof SupertonicEngine) engine.dispose()
+    modelProgress = null
+    settingsStore.patch({ engine: kind })
+    const ctx = curDoc ? { docId: curDoc.id, docHash: hashText(curDoc.rawText) } : undefined
+    engine = createEngine(kind, ctx)
+    // 현재 문서가 열려 있으면 새 엔진으로 다시 로드(Supertonic이면 모델 다운로드 시작)
+    if (curDoc) {
+      currentChunkIndex = 0
+      await engine.load(chunks)
+    }
+  }
 
   /** 문서를 열어 청크 준비 + 엔진 로드 + 플레이어 진입 */
   async function openDocument(doc: StoredDocument) {
@@ -122,8 +162,32 @@
     <h1>{view === 'player' && curDoc ? curDoc.title : 'Markdown Radio'}</h1>
   </header>
 
+  {#if modelProgress && modelProgress.ratio < 1}
+    <div class="model-progress" role="status">
+      <span class="mp-label">{modelProgress.label}… {Math.round(modelProgress.ratio * 100)}%</span>
+      <progress max="1" value={modelProgress.ratio}></progress>
+    </div>
+  {/if}
+
   {#if view === 'home'}
     <section class="home">
+      <div class="engine-pick">
+        <span class="engine-label">음성 엔진</span>
+        <div class="engine-opts">
+          <button
+            class:active={settingsStore.value.engine === 'webspeech'}
+            onclick={() => setEngineKind('webspeech')}
+          >
+            기본 <small>빠름 · 무설치</small>
+          </button>
+          <button
+            class:active={settingsStore.value.engine === 'supertonic'}
+            onclick={() => setEngineKind('supertonic')}
+          >
+            고품질 Supertonic <small>최초 1회 ~263MB</small>
+          </button>
+        </div>
+      </div>
       <Uploader onload={handleUpload} />
       <Library onselect={handleSelect} />
     </section>
@@ -240,5 +304,67 @@
     background: var(--surface);
     color: var(--accent);
     box-shadow: var(--shadow);
+  }
+
+  .engine-pick {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .engine-label {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+  .engine-opts {
+    display: flex;
+    gap: 0.5rem;
+  }
+  .engine-opts button {
+    flex: 1;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    border-radius: var(--radius-sm);
+    padding: 0.7rem 0.6rem;
+    font-size: 0.95rem;
+    font-weight: 600;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    line-height: 1.25;
+  }
+  .engine-opts button small {
+    font-weight: 400;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+  }
+  .engine-opts button.active {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .engine-opts button.active small {
+    color: var(--accent);
+  }
+  .model-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    background: var(--accent-soft);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.6rem 0.8rem;
+    margin-bottom: 1rem;
+  }
+  .mp-label {
+    font-size: 0.85rem;
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .model-progress progress {
+    width: 100%;
+    height: 8px;
+    accent-color: var(--accent);
   }
 </style>

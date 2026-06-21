@@ -46,6 +46,8 @@ export class WebSpeechEngine implements RadioEngine {
   /** ko-KR 우선 음성 캐시 */
   private voice: SpeechSynthesisVoice | null = null
   private voicesReady = false
+  /** 사용자가 선택한 음성 URI(없으면 기본 선택 로직 = 남성 우선) */
+  private voiceURI: string | null = null
 
   /** 배속(FN-08) */
   private rate = 1.0
@@ -90,11 +92,7 @@ export class WebSpeechEngine implements RadioEngine {
     const pick = () => {
       const voices = speechSynthesis.getVoices()
       if (voices.length === 0) return false
-      // ko / ko-KR 우선, 없으면 기본(첫 음성)
-      this.voice = voices.find((v) => v.lang && v.lang.toLowerCase().startsWith('ko')) ?? null
-      if (!this.voice) {
-        console.warn('[WebSpeechEngine] 한국어(ko) 음성을 찾지 못해 브라우저 기본 음성을 사용합니다.')
-      }
+      this.voice = this.selectVoice(voices)
       this.voicesReady = true
       return true
     }
@@ -105,6 +103,47 @@ export class WebSpeechEngine implements RadioEngine {
       speechSynthesis.removeEventListener('voiceschanged', handler)
     }
     speechSynthesis.addEventListener('voiceschanged', handler)
+  }
+
+  /**
+   * 음성 선택 우선순위: 사용자 지정(voiceURI) > 한국어 남성 휴리스틱 > 첫 한국어 > null(브라우저 기본).
+   * 성별 속성이 표준에서 빠졌으므로 이름 휴리스틱으로 남성을 추정한다(예: Microsoft InJoon).
+   */
+  private selectVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null {
+    if (this.voiceURI) {
+      const chosen = voices.find((v) => v.voiceURI === this.voiceURI)
+      if (chosen) return chosen
+    }
+    const ko = voices.filter((v) => v.lang && v.lang.toLowerCase().startsWith('ko'))
+    const male = ko.find((v) => /injoon|injun|\bmale\b|남성|남자/i.test(v.name))
+    if (male) return male
+    if (ko.length > 0) return ko[0]
+    if (voices.length > 0) {
+      console.warn('[WebSpeechEngine] 한국어(ko) 음성을 찾지 못해 브라우저 기본 음성을 사용합니다.')
+    }
+    return null
+  }
+
+  /** 현재 선택된 음성의 URI(UI 표시 동기화용) */
+  get currentVoiceURI(): string | null {
+    return this.voice?.voiceURI ?? null
+  }
+
+  /** UI 드롭다운용: 사용 가능한 한국어 음성 목록 */
+  getKoreanVoices(): { uri: string; name: string }[] {
+    if (typeof speechSynthesis === 'undefined') return []
+    return speechSynthesis
+      .getVoices()
+      .filter((v) => v.lang && v.lang.toLowerCase().startsWith('ko'))
+      .map((v) => ({ uri: v.voiceURI, name: v.name }))
+  }
+
+  /** 음성 선택. null이면 기본 선택(남성 우선). 재생 중이면 즉시 재발화로 반영. */
+  setVoice(uri: string | null): void {
+    this.voiceURI = uri
+    const voices = typeof speechSynthesis !== 'undefined' ? speechSynthesis.getVoices() : []
+    this.voice = this.selectVoice(voices)
+    if (this.playing && !this.paused) this.reSpeakCurrent()
   }
 
   // ── RadioEngine: load ──────────────────────────────────────

@@ -33,6 +33,30 @@
   let cur = $state(0) // 현재 청크 인덱스(위치의 진실)
   let rate = $state(settingsStore.value.rate)
 
+  // ── 음성 선택(남성/여성 등) ─────────────────────────────────
+  let voices = $state<{ uri: string; name: string }[]>([])
+  let selectedVoice = $state('')
+
+  // 브라우저 음성 목록 로드(비동기 voiceschanged 대응) + 현재 선택 동기화
+  $effect(() => {
+    const load = () => {
+      voices = engine.getKoreanVoices?.() ?? []
+      // settings 에 저장된 음성 우선, 없으면 엔진이 고른 기본(남성 우선)을 표시
+      selectedVoice = settingsStore.value.voiceURI ?? engine.currentVoiceURI ?? ''
+    }
+    load()
+    if (typeof speechSynthesis !== 'undefined') {
+      speechSynthesis.addEventListener('voiceschanged', load)
+      return () => speechSynthesis.removeEventListener('voiceschanged', load)
+    }
+  })
+
+  function onSelectVoice(e: Event): void {
+    const uri = (e.currentTarget as HTMLSelectElement).value
+    selectedVoice = uri
+    settingsStore.setVoiceURI(uri) // App 의 effect 가 engine.setVoice 로 반영
+  }
+
   /** 현재 청크(파생). */
   let current = $derived<Chunk | undefined>(chunks[cur])
   /** 진행률 0~1(파생). 청크 인덱스 기반(시간 아님). */
@@ -259,6 +283,17 @@
         {/each}
       </select>
     </div>
+
+    <!-- 음성 선택(브라우저에 한국어 음성이 2개 이상일 때만 노출) -->
+    {#if voices.length > 1}
+      <div class="rate voice" title="음성 선택">
+        <select aria-label="음성" value={selectedVoice} onchange={onSelectVoice}>
+          {#each voices as v}
+            <option value={v.uri}>{v.name}</option>
+          {/each}
+        </select>
+      </div>
+    {/if}
 
     <!-- 북마크 -->
     <button

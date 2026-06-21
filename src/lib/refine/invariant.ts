@@ -56,11 +56,11 @@ export function normalizeForCompare(s: string): string {
 }
 
 /**
- * 청크 배열의 불변식을 검사한다. 위반 시 상세 메시지와 함께 throw.
- * @param chunks chunkify 결과
- * @param rawText 원문
+ * 청크 배열의 불변식 위반 목록을 수집한다(throw 하지 않음).
+ * assertChunkInvariant(엄격·throw)와 buildChunks 의 graceful 경고가 공유하는 단일 검사 로직.
+ * @returns 위반 메시지 배열(빈 배열이면 통과)
  */
-export function assertChunkInvariant(chunks: Chunk[], rawText: string): void {
+export function collectChunkInvariantViolations(chunks: Chunk[], rawText: string): string[] {
   const errors: string[] = []
   let prevSpeechIndex = -1
 
@@ -113,6 +113,17 @@ export function assertChunkInvariant(chunks: Chunk[], rawText: string): void {
     prevSpeechIndex = c.endOffset
   }
 
+  return errors
+}
+
+/**
+ * 청크 배열의 불변식을 검사한다. 위반 시 상세 메시지와 함께 throw.
+ * (개발·테스트용 엄격 검사 진입점. 프로덕션 graceful 경로는 collectChunkInvariantViolations 를 직접 쓴다.)
+ * @param chunks chunkify 결과
+ * @param rawText 원문
+ */
+export function assertChunkInvariant(chunks: Chunk[], rawText: string): void {
+  const errors = collectChunkInvariantViolations(chunks, rawText)
   if (errors.length > 0) {
     throw new Error(
       `청크 불변식 위반 ${errors.length}건 (FN-03):\n\n` + errors.join('\n\n') + '\n',

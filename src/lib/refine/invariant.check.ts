@@ -68,6 +68,28 @@ radio.play();
 
 새 코너의 첫 문장입니다.`,
   },
+  {
+    // ⚠️ 실제 사용자 문서 회귀(B.1~B.4): 이모지(서로게이트) 헤더 + sql 코드블록 +
+    //   [a.md](a.md) 자기참조 링크 + bare URL + 강조 마커. 예전엔 불변식 위반 다수로 throw 했다.
+    name: '실사용 회귀(이모지·SQL코드블록·md링크·강조)',
+    md: `# 🛠 Supabase 셋업 가이드
+
+이 문서는 **빨간 경고 — 딱 하나만 조심!** 하면 됩니다. 🔔 자세한 건 [supabase-setup-guide.md](supabase-setup-guide.md) 를 보세요. 그리고 https://supabase.com/docs 도 참고. 🚀
+
+## 🔑 환경 변수
+
+📦 아래 SQL을 실행하세요.
+
+\`\`\`sql
+create policy "is_public read"
+  on documents for select
+  using ( is_public = true );
+
+alter table users add column password text;
+\`\`\`
+
+👍 끝! 🎉 이제 동작합니다. 🙋 질문은 이슈로. 🧠 참고로 🔜 다음 단계는 🗺️ 로드맵 참고.`,
+  },
 ]
 
 function preview(s: string, n = 30): string {
@@ -82,7 +104,7 @@ for (const sample of samples) {
   console.log(`샘플: ${sample.name}`)
   console.log('──────────────────────────────────────────')
   try {
-    const { blocks, chunks } = buildChunks(sample.md)
+    const { blocks, chunks } = buildChunks(sample.md, { strict: true })
     const speech = chunks.filter((c) => c.kind === 'speech')
     const silence = chunks.filter((c) => c.kind === 'silence')
     console.log(
@@ -119,6 +141,7 @@ try {
   const { chunks } = buildChunks(md, {
     refine: { skipCodeBlocks: false, tableMode: 'list', readImageAlt: true },
     chunk: DEFAULT_CHUNK_OPTIONS,
+    strict: true,
   })
   console.log(`chunks=${chunks.length}`)
   console.log('  ✓ assertChunkInvariant 통과')

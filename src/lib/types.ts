@@ -132,6 +132,12 @@ export interface RadioEngine {
   off(event: EngineEvent, cb: (p: EnginePosition) => void): void
   /** 계측용 문서 컨텍스트 주입(선택 기능). 통합 단계에서 문서 로드 시 호출 → 재생 계측이 올바른 docId/docHash 로 적재된다. */
   setDocContext?(ctx: { docId: string; docHash: string } | null): void
+  /** 사용 가능한 한국어 음성 목록(Web Speech 한정, UI 드롭다운용). */
+  getKoreanVoices?(): { uri: string; name: string }[]
+  /** 음성 선택(voiceURI). null이면 기본 선택 로직(남성 우선). */
+  setVoice?(uri: string | null): void
+  /** 현재 선택된 음성의 URI(UI 표시 동기화용). */
+  readonly currentVoiceURI?: string | null
   /** 백엔드가 제공할 때만 채워지는 선택 능력 */
   readonly capabilities: {
     wordBoundary?: boolean // onboundary 로 단어 단위 charOffset 갱신 가능

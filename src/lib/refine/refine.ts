@@ -57,6 +57,43 @@ function stripEmoji(s: string): string {
   return s.replace(EMOJI_RE, '')
 }
 
+/**
+ * ⚠️ 이모지 오프셋 정합(FN-02 · B.1): 단순 stripEmoji 는 plain 만 줄이고 원문 범위는 그대로 둬서,
+ *   buildOffsetMap 의 선형보간이 첫 평문 문자를 이모지(서로게이트 페어, UTF-16 2 code unit) 한복판/
+ *   바로 뒤로 매핑 → slice 가 깨진 low-surrogate(\udexx)나 이모지를 포함해 불변식이 깨졌다.
+ *
+ * 해결: 텍스트 노드 value(원문 그대로, 1:1 오프셋)를 이모지 경계로 쪼개,
+ *   살아남은 각 평문 런(run)을 자기 원문 범위 [baseOffset+runStart, baseOffset+runEnd] 를 가진
+ *   별도 조각으로 만든다. 제거된 이모지는 조각 사이의 "진짜 gap"이 되어,
+ *   문장 시작 offset 이 자연히 이모지(그리고 뒤따르는 공백, trim 단계가 처리)를 건너뛴다.
+ *
+ * 전제: text 노드의 value 는 원문 verbatim 이라 value 의 code-unit 인덱스가 원문 오프셋과 1:1.
+ *       (이스케이프가 있는 escape 노드는 mdast 에서 별도 text 노드로 분리되므로 여기엔 안 들어온다.)
+ */
+function pushEmojiAwarePieces(value: string, baseOffset: number, out: CleanPiece[]): void {
+  EMOJI_RE.lastIndex = 0
+  let runStart = 0 // 현재 평문 런의 value 내 시작 인덱스
+  let m: RegExpExecArray | null
+  while ((m = EMOJI_RE.exec(value)) !== null) {
+    const emojiStart = m.index
+    const emojiEnd = m.index + m[0].length
+    if (emojiStart > runStart) {
+      // 이모지 직전까지의 평문 런을 자기 원문 범위로 push.
+      const run = value.slice(runStart, emojiStart)
+      const p = piece(run, baseOffset + runStart, baseOffset + emojiStart)
+      if (p) out.push(p)
+    }
+    runStart = emojiEnd // 이모지는 건너뛴다(gap).
+    if (m.index === EMOJI_RE.lastIndex) EMOJI_RE.lastIndex++ // 0폭 매치 무한루프 가드
+  }
+  // 마지막 이모지 뒤(또는 이모지가 없으면 전체) 평문 런.
+  if (runStart < value.length) {
+    const run = value.slice(runStart)
+    const p = piece(run, baseOffset + runStart, baseOffset + value.length)
+    if (p) out.push(p)
+  }
+}
+
 /** HTML 태그 제거(인라인/블록 HTML 노드 본문 정리용). */
 function stripHtmlTags(s: string): string {
   return s.replace(/<[^>]*>/g, '')
@@ -95,9 +132,8 @@ function collectPhrasing(node: PhrasingContent, opts: RefineOptions, out: CleanP
     case 'text': {
       const off = nodeOffsets(node)
       if (!off) return
-      const plain = stripEmoji(node.value)
-      const p = piece(plain, off.start, off.end)
-      if (p) out.push(p)
+      // 이모지를 단순 제거하지 않고 경계로 쪼개 각 평문 런이 정확한 원문 범위를 갖게 한다(B.1).
+      pushEmojiAwarePieces(node.value, off.start, out)
       return
     }
     case 'inlineCode': {
@@ -122,12 +158,12 @@ function collectPhrasing(node: PhrasingContent, opts: RefineOptions, out: CleanP
       const inner: CleanPiece[] = []
       for (const child of node.children) collectPhrasing(child, opts, inner)
       const innerText = inner.map((x) => x.plain).join('')
-      const url = (node as { url?: string }).url ?? ''
-      // autolink / 원문 URL: 표시 텍스트가 URL 과 같거나(remark-gfm autolink literal) 비었으면 "링크" 한 단어로.
-      const isAutolink =
-        innerText.trim() === '' ||
-        looksLikeUrl(innerText) ||
-        (url !== '' && innerText.trim() === url.trim())
+      // autolink / bare URL: 표시 텍스트가 비었거나 그 자체가 URL 일 때만 "링크" 치환(FN-02).
+      //  ⚠️ B.3: 예전엔 표시텍스트===url 이면 autolink 로 봤는데, [a.md](a.md) 처럼
+      //   링크 텍스트가 URL 과 우연히 같은(.md 상호참조 등) [text](url) 구조까지 "링크"로 잘못 치환돼
+      //   slice(원문 [text](url))=normalize→text 와 어긋났다. 구조가 [text](url) 면 무조건 text 를 쓴다.
+      //   "링크" 치환은 bare URL(autolink literal: 표시텍스트가 URL 자신) 에만 적용.
+      const isAutolink = innerText.trim() === '' || looksLikeUrl(innerText)
       if (isAutolink) {
         // 링크 전체 원문 범위를 "링크" 한 단어로 치환.
         const p = piece('링크', off.start, off.end)

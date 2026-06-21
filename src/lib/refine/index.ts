@@ -8,33 +8,54 @@ import type { CleanBlock, Chunk, RefineOptions, ChunkOptions } from '../types.ts
 import { DEFAULT_REFINE_OPTIONS, DEFAULT_CHUNK_OPTIONS } from '../types.ts'
 import { refineMarkdown } from './refine.ts'
 import { chunkify } from './chunk.ts'
-import { assertChunkInvariant } from './invariant.ts'
+import { assertChunkInvariant, collectChunkInvariantViolations } from './invariant.ts'
 
 // 하위 함수 re-export (UI/테스트가 개별 접근 가능)
 export { refineMarkdown } from './refine.ts'
 export type { CleanPiece, CleanBlockEx } from './refine.ts'
 export { chunkify } from './chunk.ts'
-export { normalizeForCompare, assertChunkInvariant } from './invariant.ts'
+export { normalizeForCompare, assertChunkInvariant, collectChunkInvariantViolations } from './invariant.ts'
 
 /**
  * 원문 마크다운을 정제·청크·검증까지 끝낸 결과를 반환한다.
  * @param rawText 원문(.md/.txt 내용)
  * @param opts.refine 정제 옵션(기본 DEFAULT_REFINE_OPTIONS)
  * @param opts.chunk 청크 옵션(기본 DEFAULT_CHUNK_OPTIONS)
- * @returns { blocks, chunks } — blocks 는 CleanBlock(+pieces), chunks 는 불변식 보장된 Chunk[]
- * @throws 불변식 위반 시 Error(상세 메시지). 매핑이 깨진 결과를 UI 로 내보내지 않기 위함.
+ * @param opts.strict 불변식 위반 처리 방식(기본 false).
+ *   - false(프로덕션 기본): 위반 시 throw 하지 않고 console.warn(위반 요약)만 남기고 청크를 그대로 반환.
+ *     → 개발용 검출이 실제 사용자 문서에서 앱 전체를 정지시키는 일을 막는다(graceful degradation).
+ *     북마크/하이라이트가 일부 어긋날 수는 있어도 앱은 살아남아 흘려듣기가 가능하다.
+ *   - true(개발·테스트): 위반 시 즉시 throw(invariant.check.ts 등에서 매핑 회귀 검출용).
+ * @returns { blocks, chunks } — blocks 는 CleanBlock(+pieces), chunks 는 Chunk[]
+ * @throws strict=true 이고 불변식 위반 시 Error(상세 메시지).
  */
 export function buildChunks(
   rawText: string,
-  opts?: { refine?: RefineOptions; chunk?: ChunkOptions },
+  opts?: { refine?: RefineOptions; chunk?: ChunkOptions; strict?: boolean },
 ): { blocks: CleanBlock[]; chunks: Chunk[] } {
   const refineOpts = opts?.refine ?? DEFAULT_REFINE_OPTIONS
   const chunkOpts = opts?.chunk ?? DEFAULT_CHUNK_OPTIONS
+  const strict = opts?.strict ?? false
 
   const blocks = refineMarkdown(rawText, refineOpts)
   const chunks = chunkify(blocks, rawText, chunkOpts, refineOpts)
-  // 빌드타임/런타임 양쪽 강제: 매핑이 깨지면 즉시 실패시켜 북마크·하이라이트 오정렬을 사전 차단.
-  assertChunkInvariant(chunks, rawText)
+
+  if (strict) {
+    // 개발/테스트: 매핑이 깨지면 즉시 실패시켜 회귀를 검출.
+    assertChunkInvariant(chunks, rawText)
+  } else {
+    // 프로덕션: 위반이 있어도 앱을 죽이지 않는다. 경고만 남기고 청크는 그대로 반환.
+    const violations = collectChunkInvariantViolations(chunks, rawText)
+    if (violations.length > 0) {
+      // 콘솔 폭주를 막기 위해 요약 + 앞 3건 상세만.
+      console.warn(
+        `[markdown-radio] 청크 불변식 위반 ${violations.length}건(graceful: 청크는 그대로 사용). ` +
+          `북마크/하이라이트가 일부 어긋날 수 있습니다.\n` +
+          violations.slice(0, 3).join('\n') +
+          (violations.length > 3 ? `\n…외 ${violations.length - 3}건` : ''),
+      )
+    }
+  }
 
   return { blocks, chunks }
 }
