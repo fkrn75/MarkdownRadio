@@ -129,15 +129,31 @@
     return start
   }
 
-  /** 진행바 드래그 → 해당 청크로 seek(FN-07 + manual_seek 계측). */
-  function onSeekInput(e: Event): void {
-    const input = e.currentTarget as HTMLInputElement
-    const idx = Number(input.value)
-    if (Number.isFinite(idx)) {
-      engine.seekToChunk(idx)
-      cur = idx
-      logEvent('manual_seek', { docId, docHash, chunkIndex: idx })
+  /**
+   * 진행바 드래그 중 — 위치 숫자만 미리보기(엔진은 호출하지 않음).
+   * 매 입력마다 seekToChunk 를 부르면 webSpeech 는 cancel↔speak 경쟁으로 무음이 되고,
+   * Supertonic 은 지나치는 중간 청크를 불필요하게 재합성한다. 그래서 확정 때만 점프한다.
+   */
+  function onSeekPreview(e: Event): void {
+    cur = Number((e.currentTarget as HTMLInputElement).value)
+  }
+
+  /**
+   * 진행바 확정(드래그 놓기/키보드) → 해당 청크로 seek + 그 지점부터 재생 시작.
+   * 정지 중이었어도 진행바를 옮긴 건 "여기서 듣겠다"는 의도이므로 재생을 시작한다.
+   * (재생 중이었으면 seekToChunk 가 이어서 재생하고, 이미 playing 이라 play()는 무시된다.)
+   * FN-07 + manual_seek 계측.
+   */
+  function onSeekCommit(e: Event): void {
+    const idx = Number((e.currentTarget as HTMLInputElement).value)
+    if (!Number.isFinite(idx)) return
+    engine.seekToChunk(idx)
+    cur = idx
+    if (!playing) {
+      engine.play()
+      playing = true
     }
+    logEvent('manual_seek', { docId, docHash, chunkIndex: idx })
   }
 
   function setRate(r: number): void {
@@ -251,7 +267,8 @@
       max={Math.max(0, chunks.length - 1)}
       step="1"
       value={cur}
-      oninput={onSeekInput}
+      oninput={onSeekPreview}
+      onchange={onSeekCommit}
       aria-label="문장 위치"
     />
     <span class="idx total">{chunks.length}</span>
