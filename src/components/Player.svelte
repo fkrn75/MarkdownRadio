@@ -1,0 +1,387 @@
+<script lang="ts">
+  /**
+   * FN-06/07/08/09 · 플레이어 (청취)
+   *  - 재생/일시정지 토글, 이전/다음 문장(engine.seekToChunk), 진행바, 배속(engine.setRate)
+   *  - 현재 읽는 문장 하이라이트: engine.on('chunkChange')로 chunkIndex 추적
+   *  - 🔖 북마크: engine.position {chunkIndex, charOffset} 그대로 기록(시간 ms 금지)
+   *  - 키보드: Space(재생/정지) ←/→(문장) ↑/↓(배속) B(북마크)
+   *
+   * 엔진은 props로 주입(테스트·통합 용이). createEngine 직접 호출은 App.svelte.
+   */
+  import type { Bookmark, Chunk, RadioEngine, EnginePosition } from '../lib/types'
+  import { genId } from '../lib/stores/id'
+  import { logEvent } from '../lib/instrumentation'
+  import { settingsStore } from '../lib/stores/settings.svelte'
+
+  interface Props {
+    chunks: Chunk[]
+    engine: RadioEngine
+    /** 문서 식별(계측·북마크 documentId). */
+    docId: string
+    /** 원문 해시(계측 docHash). hashText(rawText) 결과를 상위가 전달. */
+    docHash: string
+    /** 북마크 생성 → 상위가 IndexedDB 저장 + 목록 갱신. */
+    onBookmark: (b: Bookmark) => void
+    /** 현재 청크 변경 통지(상위가 정독뷰 동기화 등에 사용). 선택. */
+    onChunkChange?: (chunkIndex: number) => void
+  }
+
+  let { chunks, engine, docId, docHash, onBookmark, onChunkChange }: Props = $props()
+
+  // ── 재생 상태(룬) ───────────────────────────────────────────
+  let playing = $state(false)
+  let cur = $state(0) // 현재 청크 인덱스(위치의 진실)
+  let rate = $state(settingsStore.value.rate)
+
+  /** 현재 청크(파생). */
+  let current = $derived<Chunk | undefined>(chunks[cur])
+  /** 진행률 0~1(파생). 청크 인덱스 기반(시간 아님). */
+  let progress = $derived(chunks.length > 1 ? cur / (chunks.length - 1) : 0)
+
+  const RATES = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+
+  // ── 엔진 이벤트 구독 ────────────────────────────────────────
+  // chunkChange 콜백: 엔진이 다음 청크로 넘어갈 때 현재 위치 갱신.
+  function onEngineChunkChange(p: EnginePosition): void {
+    cur = p.chunkIndex
+    onChunkChange?.(p.chunkIndex)
+  }
+  function onEngineEnd(): void {
+    playing = false
+  }
+
+  // engine 인스턴스가 바뀌면(문서 전환) 구독을 재설정.
+  $effect(() => {
+    const e = engine
+    e.on('chunkChange', onEngineChunkChange)
+    e.on('end', onEngineEnd)
+    // 초기 위치 동기화
+    cur = e.position.chunkIndex
+    return () => {
+      e.off('chunkChange', onEngineChunkChange)
+      e.off('end', onEngineEnd)
+    }
+  })
+
+  // 배속 설정이 외부에서 바뀌면 로컬·엔진에 반영.
+  $effect(() => {
+    rate = settingsStore.value.rate
+  })
+
+  // ── 컨트롤 동작 ─────────────────────────────────────────────
+  function togglePlay(): void {
+    if (playing) {
+      engine.pause()
+      playing = false
+    } else {
+      engine.play()
+      playing = true
+    }
+  }
+
+  /** 이전 문장: 무음 청크는 건너뛰며 직전 speech 청크로(없으면 0). */
+  function prev(): void {
+    const target = findChunk(cur - 1, -1)
+    if (target !== null) {
+      engine.seekToChunk(target)
+      cur = target
+      logEvent('manual_seek', { docId, docHash, chunkIndex: target })
+    }
+  }
+
+  /** 다음 문장. */
+  function next(): void {
+    const target = findChunk(cur + 1, +1)
+    if (target !== null) {
+      engine.seekToChunk(target)
+      cur = target
+      logEvent('manual_seek', { docId, docHash, chunkIndex: target })
+    }
+  }
+
+  /** start 부터 step 방향으로 범위 내 첫 인덱스 반환(무음도 포함; 엔진이 무음 처리). */
+  function findChunk(start: number, step: number): number | null {
+    if (start < 0 || start >= chunks.length) return null
+    return start
+  }
+
+  /** 진행바 드래그 → 해당 청크로 seek(FN-07 + manual_seek 계측). */
+  function onSeekInput(e: Event): void {
+    const input = e.currentTarget as HTMLInputElement
+    const idx = Number(input.value)
+    if (Number.isFinite(idx)) {
+      engine.seekToChunk(idx)
+      cur = idx
+      logEvent('manual_seek', { docId, docHash, chunkIndex: idx })
+    }
+  }
+
+  function setRate(r: number): void {
+    rate = r
+    engine.setRate(r)
+    settingsStore.setRate(r) // FN-08 SHOULD: 마지막 배속 저장
+  }
+
+  /** 배속을 한 단계 올리고/내리고(키보드 ↑↓). */
+  function stepRate(dir: 1 | -1): void {
+    const i = RATES.indexOf(rate)
+    const base = i === -1 ? RATES.indexOf(1.0) : i
+    const ni = Math.min(RATES.length - 1, Math.max(0, base + dir))
+    setRate(RATES[ni])
+  }
+
+  /**
+   * 🔖 북마크 — engine.position 을 그대로 기록(폐루프 핵심).
+   *  - chunkIndex/charOffset: position 그대로(시간 ms 금지)
+   *  - previewText: 현재 청크 앞 30자
+   */
+  function addBookmark(): void {
+    const pos = engine.position
+    const chunk = chunks[pos.chunkIndex]
+    const preview = (chunk?.text ?? '').slice(0, 30)
+    const b: Bookmark = {
+      id: genId(),
+      documentId: docId,
+      chunkIndex: pos.chunkIndex,
+      charOffset: pos.charOffset,
+      previewText: preview,
+      createdAt: Date.now(),
+    }
+    onBookmark(b)
+    logEvent('bookmark_add', { docId, docHash, chunkIndex: pos.chunkIndex })
+    // 가벼운 피드백
+    flashBookmark()
+  }
+
+  // 북마크 토스트 피드백
+  let bookmarked = $state(false)
+  let flashTimer: ReturnType<typeof setTimeout> | undefined
+  function flashBookmark(): void {
+    bookmarked = true
+    clearTimeout(flashTimer)
+    flashTimer = setTimeout(() => (bookmarked = false), 1200)
+  }
+
+  // ── 키보드 단축키(FN-07 SHOULD) ─────────────────────────────
+  function onKeydown(e: KeyboardEvent): void {
+    // 입력 요소에 포커스 중이면 단축키 무시(텍스트 입력 보호)
+    const t = e.target as HTMLElement | null
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+
+    switch (e.key) {
+      case ' ':
+        e.preventDefault()
+        togglePlay()
+        break
+      case 'ArrowLeft':
+        e.preventDefault()
+        prev()
+        break
+      case 'ArrowRight':
+        e.preventDefault()
+        next()
+        break
+      case 'ArrowUp':
+        e.preventDefault()
+        stepRate(1)
+        break
+      case 'ArrowDown':
+        e.preventDefault()
+        stepRate(-1)
+        break
+      case 'b':
+      case 'B':
+        e.preventDefault()
+        addBookmark()
+        break
+    }
+  }
+
+  $effect(() => {
+    window.addEventListener('keydown', onKeydown)
+    return () => window.removeEventListener('keydown', onKeydown)
+  })
+</script>
+
+<div class="player">
+  <!-- 현재 읽는 문장 하이라이트 영역(원문 동기화는 정독뷰, 여기는 정제 텍스트) -->
+  <div class="now-reading" aria-live="polite">
+    {#if current}
+      {#if current.kind === 'silence'}
+        <span class="silence">…</span>
+      {:else}
+        <p class="sentence">{current.text}</p>
+      {/if}
+    {:else}
+      <p class="sentence muted">재생할 내용이 없습니다.</p>
+    {/if}
+  </div>
+
+  <!-- 진행바: 청크 인덱스 기반 -->
+  <div class="progress-row">
+    <span class="idx">{cur + 1}</span>
+    <input
+      class="seek"
+      type="range"
+      min="0"
+      max={Math.max(0, chunks.length - 1)}
+      step="1"
+      value={cur}
+      oninput={onSeekInput}
+      aria-label="문장 위치"
+    />
+    <span class="idx total">{chunks.length}</span>
+  </div>
+
+  <!-- 컨트롤 -->
+  <div class="controls">
+    <button type="button" class="ctrl" onclick={prev} aria-label="이전 문장" title="이전 문장 (←)">
+      ◀◀
+    </button>
+    <button
+      type="button"
+      class="ctrl play"
+      onclick={togglePlay}
+      aria-label={playing ? '일시정지' : '재생'}
+      title="재생/일시정지 (Space)"
+    >
+      {playing ? '⏸' : '▶'}
+    </button>
+    <button type="button" class="ctrl" onclick={next} aria-label="다음 문장" title="다음 문장 (→)">
+      ▶▶
+    </button>
+
+    <!-- 배속 -->
+    <div class="rate" title="배속 (↑↓)">
+      <select aria-label="배속" value={rate} onchange={(e) => setRate(Number(e.currentTarget.value))}>
+        {#each RATES as r}
+          <option value={r}>{r}x</option>
+        {/each}
+      </select>
+    </div>
+
+    <!-- 북마크 -->
+    <button
+      type="button"
+      class="ctrl bookmark"
+      class:flash={bookmarked}
+      onclick={addBookmark}
+      aria-label="북마크 추가"
+      title="북마크 (B)"
+    >
+      🔖
+    </button>
+  </div>
+
+  {#if bookmarked}
+    <p class="toast" role="status">북마크 추가됨</p>
+  {/if}
+</div>
+
+<style>
+  .player {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .now-reading {
+    min-height: 4.5rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 1.1rem;
+    box-shadow: var(--shadow);
+    display: flex;
+    align-items: center;
+  }
+  .sentence {
+    margin: 0;
+    font-size: 1.15rem;
+    line-height: 1.7;
+    /* 현재 읽는 문장 강조 */
+    background: var(--highlight);
+    border-radius: 6px;
+    padding: 0.1rem 0.3rem;
+    box-decoration-break: clone;
+  }
+  .sentence.muted {
+    background: transparent;
+    color: var(--text-muted);
+  }
+  .silence {
+    color: var(--text-muted);
+    font-size: 1.5rem;
+    letter-spacing: 0.2em;
+  }
+
+  .progress-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+  }
+  .idx {
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    min-width: 2.5ch;
+    text-align: right;
+  }
+  .idx.total {
+    text-align: left;
+  }
+  .seek {
+    flex: 1;
+    accent-color: var(--accent);
+  }
+
+  .controls {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .ctrl {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    padding: 0.6rem 0.9rem;
+    font-size: 1rem;
+    min-width: 3rem;
+  }
+  .ctrl:hover {
+    border-color: var(--accent);
+  }
+  .ctrl.play {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+    font-size: 1.2rem;
+    min-width: 3.5rem;
+  }
+  .ctrl.bookmark.flash {
+    background: var(--highlight-bookmark);
+    border-color: var(--warn);
+  }
+  .rate select {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    padding: 0.55rem 0.5rem;
+    font-family: inherit;
+    font-size: 0.9rem;
+  }
+
+  .toast {
+    margin: 0;
+    text-align: center;
+    color: var(--ok);
+    background: var(--ok-soft);
+    border-radius: var(--radius-sm);
+    padding: 0.4rem 0.8rem;
+    font-size: 0.85rem;
+  }
+</style>
