@@ -58,6 +58,24 @@ function stripEmoji(s: string): string {
 }
 
 /**
+ * 다이어그램 코드블록 언어 집합. 이 언어로 표기된 펜스 코드블록은 내용을 읽으면 소음이므로
+ * "도표가 있습니다" 안내(annotation 블록)로 치환해 흘려듣기→정독 복귀를 돕는다.
+ */
+const DIAGRAM_LANGS = new Set([
+  'mermaid',
+  'plantuml',
+  'puml',
+  'dot',
+  'graphviz',
+  'sequence',
+  'flowchart',
+  'gantt',
+  'classdiagram',
+  'statediagram',
+  'erdiagram',
+])
+
+/**
  * ⚠️ 이모지 오프셋 정합(FN-02 · B.1): 단순 stripEmoji 는 plain 만 줄이고 원문 범위는 그대로 둬서,
  *   buildOffsetMap 의 선형보간이 첫 평문 문자를 이모지(서로게이트 페어, UTF-16 2 code unit) 한복판/
  *   바로 뒤로 매핑 → slice 가 깨진 low-surrogate(\udexx)나 이모지를 포함해 불변식이 깨졌다.
@@ -343,6 +361,26 @@ function collectFlow(node: RootContent, opts: RefineOptions, rawText: string, ou
       return
     }
     case 'code': {
+      // 다이어그램 코드블록(mermaid 등): 읽으면 소음이므로 "도표 있음" 안내(annotation)로 치환.
+      //   text='도표'(자막·하이라이트용), spokenText=안내문(발화), offset=원문 도표 범위.
+      //   불변식은 annotation 을 동치 검사에서 제외하므로 안전.
+      const codeOff = nodeOffsets(node)
+      const codeLang = ((node as { lang?: string }).lang ?? '').toLowerCase()
+      if (codeOff && DIAGRAM_LANGS.has(codeLang)) {
+        out.push({
+          text: '도표',
+          isHeading: false,
+          headingLevel: undefined,
+          sourceLineStart: line.start,
+          sourceLineEnd: line.end,
+          startOffset: codeOff.start,
+          endOffset: codeOff.end,
+          pieces: [{ plain: '도표', srcStart: codeOff.start, srcEnd: codeOff.end }],
+          isAnnotation: true,
+          spokenText: '도표가 있습니다. 정독 화면에서 확인하세요.',
+        })
+        return
+      }
       // 코드블록: 기본 건너뜀. opts.skipCodeBlocks=false 면 내용을 읽되,
       // 코드 자체는 문장 정제 대상이 아니므로 원문 그대로(언어 펜스 제외)를 한 블록으로.
       if (opts.skipCodeBlocks) return
@@ -422,6 +460,11 @@ function collectTableAsList(
   opts: RefineOptions,
   out: CleanBlockEx[],
 ): void {
+  // 'header' 모드: 첫 행을 헤더 라벨로 삼아 본문 행을 "헤더는 값"으로 읽는다(2행 이상일 때만).
+  if (opts.tableMode === 'header' && table.children.length >= 2) {
+    collectTableAsHeader(table, opts, out)
+    return
+  }
   for (const row of table.children) {
     const cellPieces: CleanPiece[] = []
     const rowLine = lineOf(row)
@@ -445,6 +488,67 @@ function collectTableAsList(
     }
     const b = blockFromPieces(cellPieces, false, undefined, rowLine.start, rowLine.end)
     if (b) out.push(b)
+  }
+}
+
+/** 한글 받침에 따라 '은/는' 조사를 고른다(한글 음절이 아니면 '는'). */
+function josaEunNeun(word: string): string {
+  if (!word) return '는'
+  const code = word.charCodeAt(word.length - 1)
+  if (code < 0xac00 || code > 0xd7a3) return '는' // 한글 음절 영역 밖
+  return (code - 0xac00) % 28 !== 0 ? '은' : '는' // 종성(받침) 있으면 '은'
+}
+
+/**
+ * 표 'header' 모드: 첫 행을 헤더 라벨로, 본문 행마다
+ *   text       = "값1, 값2"          (원문 셀 piece 기반 → 불변식 유지)
+ *   spokenText = "헤더1은 값1, 헤더2는 값2"  (청취 컨텍스트)
+ * 로 만든다. spokenText 는 chunk.ts 가 1 청크로 보존한다(숫자 등은 toSpoken 이 추가 변환).
+ */
+function collectTableAsHeader(
+  table: Extract<RootContent, { type: 'table' }>,
+  opts: RefineOptions,
+  out: CleanBlockEx[],
+): void {
+  const rows = table.children
+  // 첫 행 = 헤더 셀 텍스트.
+  const headerCells: string[] = []
+  for (const cell of rows[0].children) {
+    const inner: CleanPiece[] = []
+    for (const child of cell.children) collectPhrasing(child, opts, inner)
+    headerCells.push(inner.map((x) => x.plain).join('').trim())
+  }
+  // 본문 행(1번째 이후)마다 블록 생성.
+  for (let r = 1; r < rows.length; r++) {
+    const row = rows[r]
+    const cellPieces: CleanPiece[] = []
+    const spokenParts: string[] = []
+    const rowLine = lineOf(row)
+    let ci = 0
+    for (const cell of row.children) {
+      const inner: CleanPiece[] = []
+      for (const child of cell.children) collectPhrasing(child, opts, inner)
+      const cellText = inner.map((x) => x.plain).join('').trim()
+      const off = nodeOffsets(cell)
+      if (cellText !== '' && off) {
+        // text 용 piece(원문 범위 보존 → 불변식). 둘째 셀부터 ", " 구분.
+        if (cellPieces.length > 0) {
+          const sep = piece(', ', off.start, off.start)
+          if (sep) cellPieces.push(sep)
+        }
+        const p = piece(cellText, off.start, off.end)
+        if (p) cellPieces.push(p)
+        // spokenText 용: "헤더는 값"(헤더 없으면 값만).
+        const header = headerCells[ci] ?? ''
+        spokenParts.push(header ? `${header}${josaEunNeun(header)} ${cellText}` : cellText)
+      }
+      ci++
+    }
+    const b = blockFromPieces(cellPieces, false, undefined, rowLine.start, rowLine.end)
+    if (b) {
+      b.spokenText = spokenParts.join(', ')
+      out.push(b)
+    }
   }
 }
 

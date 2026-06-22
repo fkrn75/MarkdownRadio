@@ -75,6 +75,20 @@ export function collectChunkInvariantViolations(chunks: Chunk[], rawText: string
   for (const c of chunks) {
     // index 연속성(speech/silence 포함 전체가 0..n-1 연속이어야 함)
     // (여기선 speech 불변식이 주목적이므로 index 는 경고성으로만 검사)
+    // annotation(다이어그램 등): text 는 원문이 아닌 안내문이라 동치 검사 제외.
+    //   offset 은 원문의 도표/표 범위를 가리키므로 유효성만 가볍게 본다.
+    if (c.kind === 'annotation') {
+      if (
+        typeof c.startOffset !== 'number' ||
+        typeof c.endOffset !== 'number' ||
+        c.startOffset < 0 ||
+        c.endOffset > rawText.length ||
+        c.endOffset < c.startOffset
+      ) {
+        errors.push(`[index ${c.index}] annotation 오프셋 범위 불량: [${c.startOffset}, ${c.endOffset}]`)
+      }
+      continue
+    }
     if (c.kind === 'silence') {
       if (c.text !== '') {
         errors.push(`[index ${c.index}] silence 청크인데 text 가 비어있지 않음: ${JSON.stringify(c.text)}`)

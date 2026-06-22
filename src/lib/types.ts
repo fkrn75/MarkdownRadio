@@ -39,14 +39,18 @@ export interface CleanBlock {
   sourceLineEnd: number
   startOffset: number // 원문 문자 오프셋(시작, 0-based) — 이 블록 텍스트가 유래한 범위
   endOffset: number // 원문 문자 오프셋(끝, exclusive)
+  /** annotation 블록(다이어그램 등): 원문엔 없는 안내문을 발화. text 동치 불변식 검사 제외. */
+  isAnnotation?: boolean
+  /** 합성 전용 발음 텍스트(표 header 결합·annotation 안내문). 없으면 text 로 합성. */
+  spokenText?: string
 }
 
 /** 정제 설정(사용자 토글) — FN-02 */
 export interface RefineOptions {
   /** 코드블록: true=건너뛰기(기본), false=읽기 */
   skipCodeBlocks: boolean
-  /** 표: 건너뛰기(기본) / 셀 나열 */
-  tableMode: 'skip' | 'list'
+  /** 표: 건너뛰기(기본) / 셀 나열 / 헤더 결합 읽기('이름은 홍길동') */
+  tableMode: 'skip' | 'list' | 'header'
   /** 이미지 alt: 무시(기본) / 읽기 */
   readImageAlt: boolean
 }
@@ -60,7 +64,7 @@ export const DEFAULT_REFINE_OPTIONS: RefineOptions = {
 // ─────────────────────────────────────────────────────────────
 // FN-03 · 문장 청크 분할
 // ─────────────────────────────────────────────────────────────
-export type ChunkKind = 'speech' | 'silence'
+export type ChunkKind = 'speech' | 'silence' | 'annotation'
 
 /**
  * 재생·합성·북마크의 최소 단위.

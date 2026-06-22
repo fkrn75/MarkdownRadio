@@ -315,7 +315,7 @@ export function toSpoken(text: string, opts?: SpokenOptions): string {
     // ── 2) 통화 기호가 숫자 앞에 오는 경우($100 -> 백 달러) ──
     if (o.units && ch === '$') {
       // 뒤에 숫자가 이어지면 "<숫자> 달러"로(통화는 뒤에 읽는 게 자연).
-      const m = /^\$(\d[\d,]*)(\.\d+)?/.exec(text.slice(i))
+      const m = /^\$(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?/.exec(text.slice(i))
       if (m) {
         const intPart = m[1].replace(/,/g, '')
         const frac = m[2] ? m[2].slice(1) : ''
@@ -334,7 +334,7 @@ export function toSpoken(text: string, opts?: SpokenOptions): string {
     // ── 3) 숫자(아라비아) 덩어리 ──
     if (/\d/.test(ch)) {
       // 숫자열 + (선택) 소수부를 통째로 잡는다. 천단위 콤마(1,000)도 흡수.
-      const m = /^(\d[\d,]*)(\.\d+)?/.exec(text.slice(i))!
+      const m = /^(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?/.exec(text.slice(i))!
       const whole = m[0]
       const intRaw = m[1].replace(/,/g, '')
       const frac = m[2] ? m[2].slice(1) : ''

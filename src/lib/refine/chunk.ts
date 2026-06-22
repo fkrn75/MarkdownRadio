@@ -243,12 +243,36 @@ export function chunkify(
 
   // 1) 블록별로 문장 → (원문 범위, 텍스트) 후보를 만든다. 무음 마커도 자리표시.
   type Cand =
-    | { kind: 'speech'; text: string; startOffset: number; endOffset: number; isHeading: boolean }
+    | { kind: 'speech'; text: string; startOffset: number; endOffset: number; isHeading: boolean; spokenText?: string }
     | { kind: 'silence' }
+    | { kind: 'annotation'; text: string; spokenText: string; startOffset: number; endOffset: number }
 
   const cands: Cand[] = []
 
   for (const block of exBlocks) {
+    // 다이어그램 등 annotation 블록: 문장 분리 없이 통째로 annotation 후보(text=자막, spokenText=발화).
+    if (block.isAnnotation) {
+      cands.push({
+        kind: 'annotation',
+        text: block.text,
+        spokenText: block.spokenText ?? block.text,
+        startOffset: block.startOffset,
+        endOffset: block.endOffset,
+      })
+      continue
+    }
+    // 표 header 행 등 spokenText 가 지정된 블록: 문장 분리 없이 1 speech 청크로(헤더 결합 발음 보존).
+    if (block.spokenText !== undefined) {
+      cands.push({
+        kind: 'speech',
+        text: block.text,
+        startOffset: block.startOffset,
+        endOffset: block.endOffset,
+        isHeading: block.isHeading,
+        spokenText: block.spokenText,
+      })
+      continue
+    }
     const map = buildOffsetMap(block.pieces)
     const cleanText = map.text
     if (cleanText.trim() === '') {
@@ -302,6 +326,11 @@ export function chunkify(
       merged.push(c)
       continue
     }
+    // annotation 은 병합 대상 아님(경계처럼 단독 유지).
+    if (c.kind === 'annotation') {
+      merged.push(c)
+      continue
+    }
     const prev = merged.length > 0 ? merged[merged.length - 1] : null
     const tooShort = c.text.length < opts.minChars
     const gap = prev && prev.kind === 'speech' ? c.startOffset - prev.endOffset : Infinity
@@ -336,13 +365,25 @@ export function chunkify(
         kind: 'silence',
         silenceMs: opts.headingSilenceMs,
       })
+    } else if (c.kind === 'annotation') {
+      // 안내 청크: text=자막, spokenText=발화(엔진이 spokenText ?? text). offset=원문 범위(점프/하이라이트).
+      chunks.push({
+        index: index++,
+        text: c.text,
+        spokenText: c.spokenText,
+        startOffset: c.startOffset,
+        endOffset: c.endOffset,
+        kind: 'annotation',
+      })
     } else {
       // 발음 텍스트(spokenText): 합성 전용. 변환 결과가 원문과 다를 때만 채운다.
       //  - text 와 같으면 undefined → 엔진이 text 로 폴백(불필요한 필드 방지).
       //  - ⚠️ 빈 문자열('')은 절대 넣지 않는다(엔진이 ''를 '무음/스킵' 신호로 보기 때문).
       //    toSpoken 은 빈 입력에만 ''를 주므로 speech 청크(text 비어있지 않음)는 안전하나,
       //    방어적으로 spoken 이 falsy 면 undefined 로 둔다(발화 누락 방지).
-      const spoken = toSpoken(c.text)
+      //  - 표 header 등으로 c.spokenText 가 지정됐으면 그걸 베이스로(숫자도 toSpoken 적용).
+      const base = c.spokenText !== undefined ? c.spokenText : c.text
+      const spoken = toSpoken(base)
       chunks.push({
         index: index++,
         text: c.text,
