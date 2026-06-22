@@ -19,7 +19,7 @@
     Root,
     TableCell,
   } from 'mdast'
-  import { nodeOffsets, isSafeUrl, isSafeImageSrc } from '../lib/markdown'
+  import { nodeOffsets, isSafeUrl, isSafeImageSrc, parseImgTag } from '../lib/markdown'
   import Self from './MarkdownNode.svelte'
   import MermaidDiagram from './MermaidDiagram.svelte'
 
@@ -61,8 +61,26 @@
 {:else if node.type === 'text'}
   {node.value}
 {:else if node.type === 'html'}
-  <!-- raw HTML 은 렌더하지 않고 텍스트로 노출(XSS 차단) -->
-  {node.value}
+  <!-- raw HTML: <img> 태그만 안전 파싱해 이미지로(src/alt 추출 + isSafeImageSrc 검사),
+       그 외 raw HTML 은 텍스트로 이스케이프(XSS 차단). -->
+  {@const htmlImg = parseImgTag(node.value)}
+  {#if htmlImg && isSafeImageSrc(htmlImg.src) && !imgFailed}
+    <img
+      src={htmlImg.src}
+      alt={htmlImg.alt}
+      loading="lazy"
+      onerror={() => (imgFailed = true)}
+      data-start={off?.start}
+      data-end={off?.end}
+    />
+  {:else if htmlImg}
+    <!-- 차단되었거나 로드 실패: 캡션 placeholder -->
+    <span class="img-fallback" data-start={off?.start} data-end={off?.end}
+      >🖼 {htmlImg.alt || imageName(htmlImg.src) || '이미지'}</span
+    >
+  {:else}
+    {node.value}
+  {/if}
 {:else if node.type === 'heading'}
   {#if node.depth === 1}
     <h1 data-start={off?.start} data-end={off?.end}>
