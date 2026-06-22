@@ -23,17 +23,40 @@ import { DEFAULT_REFINE_OPTIONS } from '../types.ts'
  * srcStart..srcEnd 는 그 텍스트가 유래한 "원문" 문자 범위(exclusive end)다.
  * 한 문장이 여러 조각(예: 중간에 **굵게**)으로 쪼개질 때, 청크 단계에서
  * 첫 조각의 srcStart ~ 마지막 조각의 srcEnd 로 원문 범위를 복원한다.
+ *
+ * isEmphasis: strong/emphasis 노드에서 유래한 조각임을 표시.
+ *   plain/srcStart/srcEnd 는 절대 바꾸지 않는다(오프셋 불변식 무손상).
+ *   바깥 강조 노드 우선: 이미 태깅된 조각은 덮어쓰지 않는다.
  */
 export interface CleanPiece {
   plain: string
   srcStart: number
   srcEnd: number
+  /** strong(**굵게**) / emphasis(*기울임*) 노드에서 유래. delete(취소선)는 제외. */
+  isEmphasis?: 'strong' | 'emphasis'
+}
+
+/**
+ * 블록 내 강조 구간(block.text 정제텍스트 char 인덱스 기준).
+ * start: inclusive, end: exclusive.
+ * ⚠️ 원문 오프셋(srcStart/srcEnd)이 아님 — blockFromPieces 가 charCursor 로 계산.
+ */
+export interface EmphasisRange {
+  start: number
+  end: number
+  kind: 'strong' | 'emphasis'
 }
 
 /** 내부 확장 블록: CleanBlock + 조각 배열(청크 매핑용). chunkify 가 사용한다. */
 export interface CleanBlockEx extends CleanBlock {
   /** 이 블록을 구성하는 평문 조각들(원문 오프셋 보존). text 는 이들의 plain 연결과 동일. */
   pieces: CleanPiece[]
+  /**
+   * 블록 내 강조 구간 목록(정제텍스트 char 인덱스 기준).
+   * chunk.ts 가 sentence 교차 계산 후 chunk.rateScale 결정에 사용.
+   * 없으면(강조 없음) undefined.
+   */
+  emphasisRanges?: EmphasisRange[]
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -175,9 +198,20 @@ function collectPhrasing(node: PhrasingContent, opts: RefineOptions, out: CleanP
       return
     }
     case 'strong':
-    case 'emphasis':
-    case 'delete': {
+    case 'emphasis': {
       // 마커 제거: 자식들을 그대로 평문화(각 자식의 원문 offset 보존).
+      // 재귀 전후 out.length 를 비교해 이 강조 노드에서 유래한 조각을 특정하고 isEmphasis 태깅.
+      // ⚠️ 바깥 강조 노드 우선: 이미 isEmphasis 가 설정된 조각은 덮어쓰지 않는다(중첩 시).
+      const kind = node.type as 'strong' | 'emphasis'
+      const before = out.length
+      for (const child of node.children) collectPhrasing(child, opts, out)
+      for (let i = before; i < out.length; i++) {
+        if (!out[i].isEmphasis) out[i] = { ...out[i], isEmphasis: kind }
+      }
+      return
+    }
+    case 'delete': {
+      // 취소선: 강조 의미 없음 — 마커만 제거하고 isEmphasis 태깅 안 함.
       for (const child of node.children) collectPhrasing(child, opts, out)
       return
     }
@@ -290,6 +324,43 @@ function blockFromPieces(
   if (text.trim() === '') return null
   const startOffset = usable[0].srcStart
   const endOffset = usable[usable.length - 1].srcEnd
+
+  // ── 강조 구간(emphasisRanges) 계산 ──────────────────────────
+  // pieces 를 순회하며 정제텍스트 내 char 인덱스(charCursor)를 추적.
+  // isEmphasis 가 설정된 연속 조각들을 같은 kind 끼리 하나의 EmphasisRange 로 병합.
+  // ⚠️ 좌표계: block.text(정제텍스트) 내 char 인덱스 — 원문 오프셋이 아님.
+  const emphasisRanges: EmphasisRange[] = []
+  let charCursor = 0
+  let emphStart: number | null = null
+  let emphKind: 'strong' | 'emphasis' | null = null
+  for (const p of usable) {
+    const len = p.plain.length
+    const curKind = p.isEmphasis ?? null
+    if (curKind !== null) {
+      if (emphStart === null || curKind !== emphKind) {
+        // 이전 range 확정(kind 가 달라졌으면 닫고 새로)
+        if (emphStart !== null && emphKind !== null) {
+          emphasisRanges.push({ start: emphStart, end: charCursor, kind: emphKind })
+        }
+        emphStart = charCursor
+        emphKind = curKind
+      }
+      // 같은 kind 연속: emphStart 유지, 아직 닫지 않음.
+    } else {
+      // 강조 끝 — 열린 range 닫기
+      if (emphStart !== null && emphKind !== null) {
+        emphasisRanges.push({ start: emphStart, end: charCursor, kind: emphKind })
+        emphStart = null
+        emphKind = null
+      }
+    }
+    charCursor += len
+  }
+  // 마지막 조각까지 강조가 이어진 경우 닫기
+  if (emphStart !== null && emphKind !== null) {
+    emphasisRanges.push({ start: emphStart, end: charCursor, kind: emphKind })
+  }
+
   return {
     text,
     isHeading,
@@ -299,6 +370,7 @@ function blockFromPieces(
     startOffset,
     endOffset,
     pieces: usable,
+    ...(emphasisRanges.length > 0 ? { emphasisRanges } : {}),
   }
 }
 

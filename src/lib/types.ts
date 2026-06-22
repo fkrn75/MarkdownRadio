@@ -88,6 +88,12 @@ export interface Chunk {
    * - chunk.ts 에서 toSpoken(text) 결과를 담는다(통합 단계, 지휘자 담당). 빈/무음 청크면 '' 또는 undefined.
    */
   spokenText?: string
+  /**
+   * 합성 속도 배율(없으면 1.0). 강조어 속도 강조 등 청크별 속도 변조에 쓴다.
+   * - 최종 속도 = 전역 배속(setRate) × rateScale 로 엔진이 적용한다(supertonic·webSpeech 공통).
+   * - 표시·북마크·offset·불변식과 무관(text/offset 은 그대로). 1.0 미만이면 더 느리게.
+   */
+  rateScale?: number
   startOffset: number // 원문 문자 오프셋(시작, 0-based)
   endOffset: number // 원문 문자 오프셋(끝, exclusive)
   kind: ChunkKind
@@ -108,6 +114,12 @@ export interface ChunkOptions {
   silenceAfterHeading: boolean
   /** 헤더 뒤 무음 길이(ms) */
   headingSilenceMs: number
+  /** 의미 단위 끊어읽기: 쉼표·접속부사 경계에서 절을 분할해 또박또박 낭독(기본 true) */
+  clauseBreak: boolean
+  /** 강조(굵게/기울임) 구간을 독립 청크로 떼어 더 천천히 발음(기본 true) */
+  emphasisSlowdown: boolean
+  /** 강조 청크 속도 배율(기본 0.85, 작을수록 느림). emphasisSlowdown=true일 때만 적용 */
+  emphasisRate: number
 }
 
 export const DEFAULT_CHUNK_OPTIONS: ChunkOptions = {
@@ -115,6 +127,9 @@ export const DEFAULT_CHUNK_OPTIONS: ChunkOptions = {
   minChars: 10,
   silenceAfterHeading: true,
   headingSilenceMs: 1500,
+  clauseBreak: true,
+  emphasisSlowdown: true,
+  emphasisRate: 0.85,
 }
 
 // ─────────────────────────────────────────────────────────────

@@ -371,7 +371,9 @@ export class WebSpeechEngine implements RadioEngine {
     const u = new SpeechSynthesisUtterance(speakText)
     if (this.voice) u.voice = this.voice
     u.lang = this.voice?.lang ?? 'ko-KR'
-    u.rate = this.rate
+    // 강조 배율(chunk.rateScale)이 있으면 전역 배속에 곱해 적용.
+    // reSpeakCurrent 도 speakFrom 을 호출하므로 자동 반영된다.
+    u.rate = this.rate * (chunk.rateScale ?? 1.0)
     this.currentUtterance = u
 
     // 단어 경계 → charOffset 갱신(미지원 환경 대비 안전 처리)

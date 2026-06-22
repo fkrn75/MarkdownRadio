@@ -50,13 +50,15 @@ export interface ModelLoadProgress {
 interface SynthEntry {
   /** 합성 완료된 AudioBuffer(무음 청크는 null = 타이머 대기) */
   buffer: AudioBuffer | null
-  /** 합성에 쓰인 speed(배속 변경 감지용) */
+  /** 합성에 쓰인 speed(= this.rate * rateScale, 배속 변경 감지용) */
   speed: number
   /** 합성에 쓰인 voiceUri(음성 변경 감지용) */
   voiceUri: string
   /** 합성에 쓰인 totalStep(품질 변경 감지용) */
   totalStep: number
   durationSec: number
+  /** 합성에 쓰인 rateScale(강조 배율 변경 감지용). 기본 1.0. */
+  rateScale: number
 }
 
 export class SupertonicEngine implements RadioEngine {
@@ -539,6 +541,7 @@ export class SupertonicEngine implements RadioEngine {
         voiceUri: this.voiceURI,
         totalStep: this.totalStep,
         durationSec: 0,
+        rateScale: 1.0,
       })
     }
     const chunk = this.chunks[idx]
@@ -550,15 +553,22 @@ export class SupertonicEngine implements RadioEngine {
         voiceUri: this.voiceURI,
         totalStep: this.totalStep,
         durationSec: 0,
+        rateScale: 1.0,
       }
       return Promise.resolve(e)
     }
 
-    // 캐시 히트(현재 speed/voice/품질 일치)
+    // 강조 배율(chunk.rateScale). 없으면 1.0(기본속도).
+    const rateScale = chunk.rateScale ?? 1.0
+    // 실제 합성 speed = 전역 배속 × 강조 배율
+    const effectiveSpeed = this.rate * rateScale
+
+    // 캐시 히트(현재 effectiveSpeed/voice/품질 일치).
+    // ⚠️ rateScale 이 달라지면 effectiveSpeed 도 달라지므로 자동으로 캐시 미스.
     const cached = this.synthCache.get(idx)
     if (
       cached &&
-      cached.speed === this.rate &&
+      cached.speed === effectiveSpeed &&
       cached.voiceUri === this.voiceURI &&
       cached.totalStep === this.totalStep
     ) {
@@ -572,7 +582,7 @@ export class SupertonicEngine implements RadioEngine {
     // ⚠️ 합성 입력만 spokenText 로 대체(발음 최적화). 표시·점프·북마크용 chunk.text 는 절대 안 바뀐다.
     //    위 무음/빈 가드는 chunk.text 기준이지만, 발음정제는 빈→비어있지 않음을 만들지 않으므로(toSpoken 순수·무음은 '')
     //    "발화할 텍스트가 있는데 합성만 spokenText 로" 라는 의미가 정확히 성립한다.
-    const promise = this.requestSynth(idx, chunk.spokenText ?? chunk.text)
+    const promise = this.requestSynth(idx, chunk.spokenText ?? chunk.text, rateScale)
     this.pendingSynth.set(idx, promise)
     promise
       .then((entry) => {
@@ -592,10 +602,11 @@ export class SupertonicEngine implements RadioEngine {
   }
 
   /** 워커에 단일 합성 요청 → PCM 수신 → AudioBuffer 생성. */
-  private requestSynth(chunkIndex: number, text: string): Promise<SynthEntry> {
+  private requestSynth(chunkIndex: number, text: string, rateScale = 1.0): Promise<SynthEntry> {
     const worker = this.getWorker()
     const id = ++this.reqSeq
-    const speed = this.rate
+    // 강조 배율을 전역 배속에 곱해 실제 합성 speed 결정.
+    const speed = this.rate * rateScale
     const voiceUri = this.voiceURI
     const totalStep = this.totalStep
 
@@ -618,8 +629,8 @@ export class SupertonicEngine implements RadioEngine {
     }
     worker.postMessage(req)
 
-    // 응답에서 PCM → AudioBuffer 변환(요청 시점의 speed/voice/품질 메타 고정)
-    return p.then((entry) => ({ ...entry, speed, voiceUri, totalStep }))
+    // 응답에서 PCM → AudioBuffer 변환(요청 시점의 speed/voice/품질/rateScale 메타 고정)
+    return p.then((entry) => ({ ...entry, speed, voiceUri, totalStep, rateScale }))
   }
 
   /** PCM(Float32, sampleRate Hz) → AudioBuffer 변환. */
@@ -659,6 +670,7 @@ export class SupertonicEngine implements RadioEngine {
           voiceUri: this.voiceURI,
           totalStep: this.totalStep,
           durationSec: 0,
+          rateScale: 1.0,
         })
       }
     }
@@ -736,12 +748,14 @@ export class SupertonicEngine implements RadioEngine {
         // AudioContext 네이티브 레이트(흔히 48000)와 달라도 createBuffer 의 sampleRate 인자로
         // 정확히 지정하면 브라우저가 재생 시 자동 리샘플링한다(피치 정상).
         const buffer = this.pcmToBuffer(msg.pcm, this.modelSampleRate)
+        // rateScale 은 requestSynth 의 .then() 체인에서 최종값으로 덮어써지므로 임시 1.0.
         r.resolve({
           buffer,
           speed: this.rate,
           voiceUri: this.voiceURI,
           totalStep: this.totalStep,
           durationSec: msg.durationSec,
+          rateScale: 1.0,
         })
         return
       }
