@@ -42,3 +42,6 @@ src/assets/models/
 
 # 테스트/커버리지
 coverage/
+
+# Claude Code 로컬 설정(커밋 제외)
+.claude/

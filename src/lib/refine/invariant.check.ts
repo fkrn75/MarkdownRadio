@@ -102,6 +102,13 @@ alter table users add column password text;
 
 자세한 건 <https://docs.example.org/guide> 와 \\_언더스코어\\_ 를 참고하세요.`,
   },
+  {
+    // ⚠️ 괄호 포함 URL 회귀: [text](url(...)) 의 url 내부 괄호 때문에 normalizeForCompare 의
+    //   [^)]* 가 첫 ) 에서 끊겨 바깥 ) 가 남아 graceful 위반(오탐)이 났다. 균형 괄호 1단계 흡수로 해결.
+    //   위키백과 _(disambiguation) URL·javascript:alert(1) 등 — 정독뷰 마크다운 렌더 테스트 문서서 표면화.
+    name: '괄호 포함 URL 링크(FN-03 회귀)',
+    md: `자세한 건 [위키백과](https://en.wikipedia.org/wiki/Apple_(disambiguation)) 항목을 보세요. 그리고 [위험 링크](javascript:alert(1)) 와 [정상 링크](https://example.com) 를 한 문장에 둡니다.`,
+  },
 ]
 
 function preview(s: string, n = 30): string {

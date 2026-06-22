@@ -22,9 +22,11 @@ export function normalizeForCompare(s: string): string {
   //  - readImageAlt 모드는 alt 를 읽으므로 양쪽(원문 slice·정제 text)에 alt 가 있어 일치.
   //  - 기본 모드(이미지 제거)는 청크가 "버려진 이미지 자리(gap)"를 가로지르지 않도록
   //    chunk.ts 가 그 지점에서 청크를 쪼개므로, slice 에 ![ ] 구문 자체가 들어오지 않는다.
-  t = t.replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+  t = t.replace(/!\[([^\]]*)\]\((?:[^()]|\([^()]*\))*\)/g, '$1')
   // 링크 구문 → 표시 텍스트만: [text](url) → text, 참조형 [text][id] → text
-  t = t.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+  //  ⚠️ url 에 균형 괄호 1쌍 허용: javascript:alert(1)·위키 URL …_(bar) 등. [^)]* 면 첫 ) 에서
+  //     끊겨 바깥 ) 가 남아 오탐(graceful 위반) 발생 → (?:[^()]|\([^()]*\))* 로 1단계 중첩 흡수.
+  t = t.replace(/\[([^\]]*)\]\((?:[^()]|\([^()]*\))*\)/g, '$1')
   t = t.replace(/\[([^\]]*)\]\[[^\]]*\]/g, '$1')
   // 각주 참조 제거
   t = t.replace(/\[\^[^\]]+\]/g, '')
