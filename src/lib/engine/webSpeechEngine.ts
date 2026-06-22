@@ -343,8 +343,13 @@ export class WebSpeechEngine implements RadioEngine {
     }
 
     // speech 청크: 빈 텍스트면 건너뜀(FN-04 길이 0 처리)
-    const text = chunk.text ?? ''
-    if (text.trim().length === 0) {
+    // ⚠️ 합성(발화) 입력만 spokenText 로 대체한다(발음 최적화). chunk.text(표시·점프·북마크용)는 절대 안 바뀐다.
+    //    빈 텍스트 판정도 "실제 발화할 텍스트(spokenText ?? text)" 기준으로 일관되게(undefined→text 폴백, ''→스킵).
+    const speakText = chunk.spokenText ?? chunk.text ?? ''
+    // spokenText 가 존재하면 발화 길이가 text 와 달라 onboundary 의 charIndex 가 text 위치와 어긋난다.
+    // → 그런 청크는 charOffset 갱신을 건너뛰고 청크 시작(0)에 고정한다(북마크는 chunkIndex 기준이라 안전).
+    const hasSpoken = typeof chunk.spokenText === 'string'
+    if (speakText.trim().length === 0) {
       this.advance()
       return
     }
@@ -363,18 +368,21 @@ export class WebSpeechEngine implements RadioEngine {
       }
     }
 
-    const u = new SpeechSynthesisUtterance(text)
+    const u = new SpeechSynthesisUtterance(speakText)
     if (this.voice) u.voice = this.voice
     u.lang = this.voice?.lang ?? 'ko-KR'
     u.rate = this.rate
     this.currentUtterance = u
 
     // 단어 경계 → charOffset 갱신(미지원 환경 대비 안전 처리)
+    // ⚠️ spokenText 로 발화하는 청크는 charIndex(발화 텍스트 기준)가 원문 text 위치와 어긋나므로
+    //    charOffset 을 갱신하지 않고 청크 시작(0)에 고정한다(북마크는 chunkIndex 기준이라 정확성 유지).
     u.onboundary = (ev: SpeechSynthesisEvent) => {
-      // charIndex 가 유효할 때만 갱신(charLength 가 없는 브라우저 있음)
       if (this.currentUtterance !== u) return
+      if (hasSpoken) return // 발음정제 청크: charOffset 0 고정(charIndex 가 text 와 불일치)
+      // charIndex 가 유효할 때만 갱신(charLength 가 없는 브라우저 있음)
       const ci = ev.charIndex
-      if (typeof ci === 'number' && ci >= 0 && ci <= text.length) {
+      if (typeof ci === 'number' && ci >= 0 && ci <= speakText.length) {
         this._position = { chunkIndex: idx, charOffset: charStart + ci }
       }
     }

@@ -14,6 +14,7 @@
 import type { CleanBlock, Chunk, ChunkOptions, RefineOptions } from '../types.ts'
 import { DEFAULT_CHUNK_OPTIONS, DEFAULT_REFINE_OPTIONS } from '../types.ts'
 import { refineMarkdown, type CleanBlockEx, type CleanPiece } from './refine.ts'
+import { toSpoken } from './speak.ts'
 
 // ─────────────────────────────────────────────────────────────
 // 조각 확보 (CleanBlockEx 면 그대로, 아니면 rawText 재정제로 매칭 복원)
@@ -336,9 +337,16 @@ export function chunkify(
         silenceMs: opts.headingSilenceMs,
       })
     } else {
+      // 발음 텍스트(spokenText): 합성 전용. 변환 결과가 원문과 다를 때만 채운다.
+      //  - text 와 같으면 undefined → 엔진이 text 로 폴백(불필요한 필드 방지).
+      //  - ⚠️ 빈 문자열('')은 절대 넣지 않는다(엔진이 ''를 '무음/스킵' 신호로 보기 때문).
+      //    toSpoken 은 빈 입력에만 ''를 주므로 speech 청크(text 비어있지 않음)는 안전하나,
+      //    방어적으로 spoken 이 falsy 면 undefined 로 둔다(발화 누락 방지).
+      const spoken = toSpoken(c.text)
       chunks.push({
         index: index++,
         text: c.text,
+        spokenText: spoken && spoken !== c.text ? spoken : undefined,
         startOffset: c.startOffset,
         endOffset: c.endOffset,
         kind: 'speech',

@@ -76,6 +76,14 @@ export type ChunkKind = 'speech' | 'silence'
 export interface Chunk {
   index: number // 0-based 순번
   text: string // 합성할 평문(무음 청크는 "")
+  /**
+   * 합성 전용 발음 텍스트(없으면 text 사용).
+   * - 원문 점프 불변식(FN-03) 검사 대상에서 제외한다(invariant 는 text 만 본다).
+   * - 표시·북마크·하이라이트·offset(startOffset/endOffset)은 모두 text 기준 그대로 — spokenText 는 절대 영향 없음.
+   * - 합성 경로(엔진)만 `spokenText ?? text` 로 이 값을 발화에 쓴다.
+   * - chunk.ts 에서 toSpoken(text) 결과를 담는다(통합 단계, 지휘자 담당). 빈/무음 청크면 '' 또는 undefined.
+   */
+  spokenText?: string
   startOffset: number // 원문 문자 오프셋(시작, 0-based)
   endOffset: number // 원문 문자 오프셋(끝, exclusive)
   kind: ChunkKind

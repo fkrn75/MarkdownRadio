@@ -569,7 +569,10 @@ export class SupertonicEngine implements RadioEngine {
     if (pend) return pend
 
     // 새 합성 요청
-    const promise = this.requestSynth(idx, chunk.text)
+    // ⚠️ 합성 입력만 spokenText 로 대체(발음 최적화). 표시·점프·북마크용 chunk.text 는 절대 안 바뀐다.
+    //    위 무음/빈 가드는 chunk.text 기준이지만, 발음정제는 빈→비어있지 않음을 만들지 않으므로(toSpoken 순수·무음은 '')
+    //    "발화할 텍스트가 있는데 합성만 spokenText 로" 라는 의미가 정확히 성립한다.
+    const promise = this.requestSynth(idx, chunk.spokenText ?? chunk.text)
     this.pendingSynth.set(idx, promise)
     promise
       .then((entry) => {
