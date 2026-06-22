@@ -41,8 +41,9 @@ export default defineConfig({
       workbox: {
         // precache 대상: 앱 셸(소형 정적 자산)만. 모델/WASM 류는 의도적으로 제외.
         globPatterns: ['**/*.{js,css,html,png,svg,webmanifest,ico}'],
-        // 모델·런타임 대용량 자산은 SW 캐시에서 완전 차단(IndexedDB 자체 캐시 사용).
-        globIgnores: ['**/*.{onnx,bin,wasm,mjs,data}'],
+        // 모델·런타임 대용량 자산 + mermaid 도식 청크(lazy)는 SW 캐시에서 차단.
+        //  - 모델: IndexedDB 자체 캐시 사용. mermaid: 정독뷰 도식 있을 때만 동적 로드(첫 설치 경량 유지).
+        globIgnores: ['**/*.{onnx,bin,wasm,mjs,data}', '**/mermaid-*.js'],
         // 안전망: 5MB 초과 파일은 어떤 경우에도 precache 하지 않음.
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         // SPA 폴백: 오프라인/새로고침 시 index.html 로 라우팅.
@@ -59,6 +60,22 @@ export default defineConfig({
   },
   build: {
     target: 'esnext',
+    rollupOptions: {
+      output: {
+        // mermaid 생태계(정독뷰 도식 렌더)를 단일 'mermaid' 청크로 묶는다. dynamic import(lazy)라
+        // 메인 번들엔 안 들어가고, 이 청크만 globIgnores('**/mermaid-*.js')로 precache 에서 통째 제외
+        // → mermaid 를 안 쓰는 사용자의 PWA 첫 설치를 경량으로 유지한다.
+        manualChunks(id) {
+          if (
+            /[\\/]node_modules[\\/](mermaid|@mermaid-js|cytoscape|cytoscape-[a-z-]+|dagre|dagre-d3-es|d3|d3-[a-z-]+|katex|khroma|dompurify|stylis|ts-dedent|@braintree|robust-predicates|delaunator|internmap|elkjs|lodash-es|marked|uuid|dayjs|@iconify|cose-base|layout-base|web-worker|hachure-fill|roughjs|points-on-curve|path-data-parser|points-on-path)[\\/]/.test(
+              id,
+            )
+          ) {
+            return 'mermaid'
+          }
+        },
+      },
+    },
   },
   worker: {
     format: 'es',

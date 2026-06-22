@@ -19,8 +19,9 @@
     Root,
     TableCell,
   } from 'mdast'
-  import { nodeOffsets, isSafeUrl } from '../lib/markdown'
+  import { nodeOffsets, isSafeUrl, isSafeImageSrc } from '../lib/markdown'
   import Self from './MarkdownNode.svelte'
+  import MermaidDiagram from './MermaidDiagram.svelte'
 
   interface Props {
     node: Root | RootContent | PhrasingContent
@@ -36,6 +37,17 @@
   const children = $derived(
     'children' in node && Array.isArray(node.children) ? node.children : [],
   )
+
+  // 이미지 로드 실패(로컬/상대경로 등 원본 부재) 시 placeholder 로 폴백.
+  let imgFailed = $state(false)
+
+  /** 이미지 URL 에서 파일명만 추출(placeholder 표시용). data: 는 빈 문자열. */
+  function imageName(url: string | null | undefined): string {
+    if (!url || url.startsWith('data:')) return ''
+    const clean = url.split(/[?#]/)[0]
+    const name = clean.split(/[\\/]/).pop() ?? ''
+    return decodeURIComponent(name)
+  }
 </script>
 
 <!--
@@ -96,11 +108,16 @@
 {:else if node.type === 'inlineCode'}
   <code class="inline" data-start={off?.start} data-end={off?.end}>{node.value}</code>
 {:else if node.type === 'code'}
-  <!-- 코드블록: 언어 라벨 + 가로스크롤 pre. 텍스트로만 출력(하이라이트 없음) -->
-  <div class="codeblock" data-start={off?.start} data-end={off?.end}>
-    {#if node.lang}<span class="lang">{node.lang}</span>{/if}
-    <pre><code>{node.value}</code></pre>
-  </div>
+  {#if node.lang === 'mermaid'}
+    <!-- mermaid 도식: 다이어그램으로 렌더(lazy import) -->
+    <MermaidDiagram code={node.value} offStart={off?.start} offEnd={off?.end} />
+  {:else}
+    <!-- 코드블록: 언어 라벨 + 가로스크롤 pre. 텍스트로만 출력(하이라이트 없음) -->
+    <div class="codeblock" data-start={off?.start} data-end={off?.end}>
+      {#if node.lang}<span class="lang">{node.lang}</span>{/if}
+      <pre><code>{node.value}</code></pre>
+    </div>
+  {/if}
 {:else if node.type === 'blockquote'}
   <blockquote data-start={off?.start} data-end={off?.end}>
     {#each children as child, i (i)}<Self node={child} />{/each}
@@ -170,11 +187,21 @@
     {#each (node as TableCell).children as child, i (i)}<Self node={child} />{/each}
   </td>
 {:else if node.type === 'image'}
-  {#if isSafeUrl(node.url)}
-    <img src={node.url} alt={node.alt ?? ''} title={node.title ?? undefined} loading="lazy" data-start={off?.start} data-end={off?.end} />
+  {#if isSafeImageSrc(node.url) && !imgFailed}
+    <img
+      src={node.url}
+      alt={node.alt ?? ''}
+      title={node.title ?? undefined}
+      loading="lazy"
+      onerror={() => (imgFailed = true)}
+      data-start={off?.start}
+      data-end={off?.end}
+    />
   {:else}
-    <!-- 안전하지 않은 이미지 src: alt 를 텍스트로만 -->
-    <span class="img-fallback" data-start={off?.start} data-end={off?.end}>{node.alt ?? ''}</span>
+    <!-- 차단(비허용 스킴)되었거나 로드 실패(로컬/상대경로 원본 부재): 캡션 placeholder -->
+    <span class="img-fallback" data-start={off?.start} data-end={off?.end}
+      >🖼 {node.alt || imageName(node.url) || '이미지'}</span
+    >
   {/if}
 {:else if node.type === 'link'}
   {#if isSafeUrl(node.url)}

@@ -423,8 +423,13 @@
     margin: 0.8em 0;
   }
   .doc :global(.img-fallback) {
+    display: inline-block;
     color: var(--text-muted);
     font-style: italic;
+    padding: 0.3em 0.6em;
+    background: var(--surface-2);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-sm);
   }
 
   /* 수평선 */
