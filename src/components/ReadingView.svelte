@@ -24,9 +24,15 @@
   import { logEvent } from '../lib/instrumentation'
   import {
     parseMarkdown,
-    findElementForRange,
-    rangeForOffset,
     chunkIndexForOffset,
+    buildOffsetIndex,
+    findElementInIndex,
+    rangeFromIndex,
+    reservedImageHeight,
+    IMG_LOAD_MARGIN_PX,
+    IMG_UNLOAD_MARGIN_PX,
+    IMG_PLACEHOLDER_MIN_HEIGHT_PX,
+    type OffsetIndexEntry,
   } from '../lib/markdown'
   import MarkdownNode from './MarkdownNode.svelte'
 
@@ -64,6 +70,134 @@
   const tree = $derived(parseMarkdown(rawText))
 
   /**
+   * 오프셋 인덱스(성능): [data-start] 요소를 start 정렬 배열로 1회 캐시한다.
+   * 매 하이라이트/점프가 querySelectorAll 풀스캔(O(N)) 하던 것을 인덱스 조회로 대체한다.
+   * 무효화 = tree 변경(아래 $effect 가 DOM 마운트 후 재빌드).
+   */
+  let offsetIndex: OffsetIndexEntry[] = $state([])
+
+  // tree(파싱 결과) 변경 → DOM 재렌더. 마운트 완료 후 1회만 인덱스 빌드.
+  $effect(() => {
+    void tree // 의존성: 트리 변경 시 재빌드
+    if (!container) {
+      offsetIndex = []
+      return
+    }
+    const c = container
+    // DOM 렌더 반영 후 수집(자식 MarkdownNode 가 그려진 뒤).
+    queueMicrotask(() => {
+      offsetIndex = buildOffsetIndex(c)
+    })
+  })
+
+  /**
+   * 이미지 가상화: .reading 컨테이너 기준 단일 IntersectionObserver 로 img[data-src] 를 일괄 관찰.
+   * 뷰포트(+LOAD 마진) 진입 → src 복원, (UNLOAD 마진) 밖 이탈 → src 비움. 요소·data-start/end 는 항상 유지.
+   * 히스테리시스(LOAD<UNLOAD 마진)로 경계 떨림 방지. 언로드 시 자연비 height 를 인라인 예약해 0 붕괴 방지.
+   */
+  $effect(() => {
+    void tree // 트리 변경 시 관찰 대상 재등록
+    if (!container) return
+    const root = container
+
+    // 안전망: IntersectionObserver 미지원 환경에서는 가상화를 끄고 모든 이미지를 즉시 로드한다.
+    //   (img 는 src 가 비어 있어 가상화 전제다 → IO 없으면 영영 안 뜨는 사고를 막는다.)
+    if (typeof IntersectionObserver === 'undefined') {
+      queueMicrotask(() => {
+        for (const img of root.querySelectorAll<HTMLImageElement>('img[data-src]')) {
+          const src = img.dataset.src
+          if (src && img.getAttribute('src') !== src) img.setAttribute('src', src)
+        }
+      })
+      return
+    }
+
+    // 이미지 로드: data-src → src. 로드 완료(load) 시 자연크기 기록 + 예약 height 해제(자연 흐름 복귀).
+    function loadImg(img: HTMLImageElement): void {
+      const src = img.dataset.src
+      if (!src) return
+      if (img.getAttribute('src') === src) return // 이미 로드(또는 로드 중)
+      const onLoad = () => {
+        // 자연크기 기록(언로드 시 예약 height 계산용). 1회만 채우면 됨.
+        if (!img.dataset.natW && img.naturalWidth > 0 && img.naturalHeight > 0) {
+          img.dataset.natW = String(img.naturalWidth)
+          img.dataset.natH = String(img.naturalHeight)
+        }
+        // 예약 height(인라인) 해제 → height:auto 자연 흐름 복귀(잘림/여백 없음).
+        img.style.height = ''
+        img.style.minHeight = ''
+        img.removeEventListener('load', onLoad)
+      }
+      img.addEventListener('load', onLoad)
+      img.setAttribute('src', src)
+    }
+
+    // 이미지 언로드: src 제거 전에 현재(또는 자연비) height 를 인라인 고정 → 레이아웃 점프/IO 폭주 방지.
+    function unloadImg(img: HTMLImageElement): void {
+      if (!img.hasAttribute('src')) return // 이미 비어 있음
+      const natW = Number(img.dataset.natW)
+      const natH = Number(img.dataset.natH)
+      // 현재 렌더 박스 높이를 우선 사용(가장 정확). 없으면 자연비로 계산, 그것도 없으면 placeholder.
+      const rendered = img.clientHeight
+      const reserved =
+        rendered > 0
+          ? rendered
+          : reservedImageHeight(
+              Number.isFinite(natW) ? natW : undefined,
+              Number.isFinite(natH) ? natH : undefined,
+              img.clientWidth || root.clientWidth,
+            )
+      img.style.height = `${reserved}px`
+      img.style.minHeight = `${IMG_PLACEHOLDER_MIN_HEIGHT_PX}px`
+      img.removeAttribute('src') // src 비움 → 디코드/메모리 해제
+    }
+
+    // .reading 뷰포트 기준 이미지가 UNLOAD 마진 밖에 있는지(언로드 데드존).
+    function isFarOutside(img: HTMLImageElement): boolean {
+      const rootRect = root.getBoundingClientRect()
+      const r = img.getBoundingClientRect()
+      // 뷰포트 위/아래로 UNLOAD 마진 이상 벗어나면 true.
+      return (
+        r.bottom < rootRect.top - IMG_UNLOAD_MARGIN_PX ||
+        r.top > rootRect.bottom + IMG_UNLOAD_MARGIN_PX
+      )
+    }
+
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const img = entry.target as HTMLImageElement
+          if (entry.isIntersecting) {
+            // LOAD 마진 안으로 진입 → 로드.
+            loadImg(img)
+          } else if (isFarOutside(img)) {
+            // LOAD 마진 밖 + UNLOAD 마진(더 멀리)도 밖 → 언로드(히스테리시스).
+            unloadImg(img)
+          }
+          // 사이 데드존(LOAD~UNLOAD)에서는 현 상태 유지(떨림 방지).
+        }
+      },
+      {
+        root,
+        // LOAD 마진으로 관찰: 이 마진 안에 들어오면 isIntersecting=true → 로드.
+        rootMargin: `${IMG_LOAD_MARGIN_PX}px 0px ${IMG_LOAD_MARGIN_PX}px 0px`,
+        threshold: 0,
+      },
+    )
+
+    // DOM 마운트 후 대상 등록(자식 렌더 완료 뒤).
+    let imgs: HTMLImageElement[] = []
+    queueMicrotask(() => {
+      imgs = Array.from(root.querySelectorAll<HTMLImageElement>('img[data-src]'))
+      for (const img of imgs) io.observe(img)
+    })
+
+    return () => {
+      io.disconnect()
+    }
+  })
+
+  /**
    * 현재 재생 청크의 원문 범위 [start, end). 동기 하이라이트용.
    * silence(빈 텍스트)거나 인덱스 없으면 null.
    */
@@ -80,16 +214,16 @@
 
   // 재생 중 현재 청크 하이라이트: offset 범위와 겹치는 가장 깊은 요소에 .cur + 따라 스크롤.
   $effect(() => {
-    // 의존성: tree(렌더 후), currentRange. DOM 갱신 뒤 실행되도록 microtask.
-    void tree
+    // 의존성: offsetIndex(인덱스 빌드 후), currentRange. 인덱스 조회라 풀스캔 없음.
+    const index = offsetIndex
     const range = currentRange
     queueMicrotask(() => {
       if (prevCurEl) {
         prevCurEl.classList.remove('cur')
         prevCurEl = null
       }
-      if (!range || !container) return
-      const el = findElementForRange(container, range.start, range.end)
+      if (!range || index.length === 0) return
+      const el = findElementInIndex(index, range.start, range.end)
       if (el) {
         el.classList.add('cur')
         prevCurEl = el
@@ -100,7 +234,7 @@
 
   // 북마크 점프: offset 포함 요소에 .jump + 정밀(Range) 스크롤.
   $effect(() => {
-    void tree
+    const index = offsetIndex
     const off = jumpOffset
     if (typeof off !== 'number') return
     queueMicrotask(() => {
@@ -108,14 +242,14 @@
         prevJumpEl.classList.remove('jump')
         prevJumpEl = null
       }
-      if (!container) return
-      const el = findElementForRange(container, off, off + 1)
+      if (index.length === 0) return
+      const el = findElementInIndex(index, off, off + 1)
       if (el) {
         el.classList.add('jump')
         prevJumpEl = el
       }
       // 정밀 스크롤: offset 포함 요소를 Range 로 감싸 가운데로. 실패 시 요소로 폴백.
-      const range = rangeForOffset(container, off)
+      const range = rangeFromIndex(index, off)
       if (range) {
         const rect = range.getBoundingClientRect()
         const host = range.startContainer.parentElement
@@ -421,6 +555,15 @@
     border-radius: var(--radius-sm);
     display: block;
     margin: 0.8em 0;
+  }
+  /*
+    가상화 이미지: 로드 전(=src 미설정) height 0 붕괴를 막는 placeholder 최소 높이.
+    ReadingView 의 IO 가 로드 시 자연비 height 를 인라인 style 로 덮어쓰고(예약), 언로드 시 다시 박는다.
+    배경은 로드 전/언로드 상태를 시각적으로 채워 빈 칸 깜빡임을 줄인다.
+  */
+  .doc :global(img.virt-img:not([src])) {
+    min-height: 240px;
+    background: var(--surface-2);
   }
   .doc :global(.img-fallback) {
     display: inline-block;

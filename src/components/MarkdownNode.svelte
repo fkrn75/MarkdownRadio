@@ -65,8 +65,15 @@
        그 외 raw HTML 은 텍스트로 이스케이프(XSS 차단). -->
   {@const htmlImg = parseImgTag(node.value)}
   {#if htmlImg && isSafeImageSrc(htmlImg.src) && !imgFailed}
+    <!--
+      이미지 가상화: src 를 초기에 비우고 원본을 data-src 에 보관한다(요소·data-start/end 는 항상 DOM 유지).
+      ReadingView 의 IntersectionObserver 가 뷰포트(+마진) 진입 시 src 복원, 이탈 시 다시 비운다.
+      src 미설정 img 는 onerror 를 발火하지 않아(IO 가 진짜 src 를 넣은 뒤의 실패만 imgFailed) base64 디코드/메모리를 절감.
+      virt-img 클래스의 min-height 로 로드 전 height 0 붕괴(레이아웃 점프) 방지.
+    -->
     <img
-      src={htmlImg.src}
+      class="virt-img"
+      data-src={htmlImg.src}
       alt={htmlImg.alt}
       loading="lazy"
       onerror={() => (imgFailed = true)}
@@ -206,8 +213,10 @@
   </td>
 {:else if node.type === 'image'}
   {#if isSafeImageSrc(node.url) && !imgFailed}
+    <!-- 이미지 가상화: src 비우고 data-src 에 원본 보관(상단 html-img 주석과 동일 전략). -->
     <img
-      src={node.url}
+      class="virt-img"
+      data-src={node.url}
       alt={node.alt ?? ''}
       title={node.title ?? undefined}
       loading="lazy"
