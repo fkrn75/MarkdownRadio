@@ -15,6 +15,7 @@
 
 import { matchDate, matchTime } from './speak.datetime.ts'
 import { matchPhone, matchOrdinal, matchTemperature } from './speak.misc.ts'
+import { matchFraction, matchCurrency, matchDimension } from './speak.units.ts'
 
 // ─────────────────────────────────────────────────────────────
 // 규칙 토글 (옵션)
@@ -45,6 +46,12 @@ export interface SpokenOptions {
   ordinals?: boolean
   /** 온도(25°C, 98.6°F) → 섭씨/화씨 도. 기본 true. */
   temperatures?: boolean
+  /** 분수(1/2 → 이분의 일). 날짜로 보이면 양보. 기본 true. */
+  fractions?: boolean
+  /** 통화(₩5000·€10·£20·¥100). $는 별도 처리. 기본 true. */
+  currencies?: boolean
+  /** 차원(3D → 쓰리디, 2D → 투디). 기본 true. */
+  dimensions?: boolean
 }
 
 const DEFAULT_OPTS: Required<SpokenOptions> = {
@@ -58,6 +65,9 @@ const DEFAULT_OPTS: Required<SpokenOptions> = {
   phones: true,
   ordinals: true,
   temperatures: true,
+  fractions: true,
+  currencies: true,
+  dimensions: true,
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -266,6 +276,13 @@ export function toSpoken(text: string, opts?: SpokenOptions): string {
     //   이들은 모두 숫자로 시작하므로, 아래 숫자 스캐너가 '6'을 먼저 먹으면 '6/22'가 깨진다.
     //   각 매처는 idx에서 패턴이 명백할 때만 {ko,len}을 주고, 아니면 null(보수적) → 다음으로.
     //   우선순위: 날짜 > 시각 > 전화 > 서수 > 온도 (교차 입력은 서로 null이라 순서 안전).
+    // 분수를 날짜보다 먼저: matchFraction은 1/2·3/4 같은 명백한 분수만 확정하고,
+    //   6/22처럼 날짜로도 보이는 모호구간은 null을 반환해 아래 matchDate에 양보한다.
+    //   (날짜를 먼저 태우면 1/2이 '1월 2일'로 잘못 먹히므로 분수가 반드시 앞서야 한다.)
+    if (o.fractions) {
+      const m = matchFraction(text, i)
+      if (m) { out += m.ko; i += m.len; continue }
+    }
     if (o.dates) {
       const m = matchDate(text, i)
       if (m) { out += m.ko; i += m.len; continue }
@@ -284,6 +301,14 @@ export function toSpoken(text: string, opts?: SpokenOptions): string {
     }
     if (o.temperatures) {
       const m = matchTemperature(text, i)
+      if (m) { out += m.ko; i += m.len; continue }
+    }
+    if (o.currencies) {
+      const m = matchCurrency(text, i)
+      if (m) { out += m.ko; i += m.len; continue }
+    }
+    if (o.dimensions) {
+      const m = matchDimension(text, i)
       if (m) { out += m.ko; i += m.len; continue }
     }
 
