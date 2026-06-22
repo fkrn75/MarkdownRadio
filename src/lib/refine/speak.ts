@@ -13,6 +13,9 @@
  *   각 규칙은 "명백히 어색하고 변환이 거의 확실한" 패턴만 건드린다.
  */
 
+import { matchDate, matchTime } from './speak.datetime.ts'
+import { matchPhone, matchOrdinal, matchTemperature } from './speak.misc.ts'
+
 // ─────────────────────────────────────────────────────────────
 // 규칙 토글 (옵션)
 // ─────────────────────────────────────────────────────────────
@@ -32,6 +35,16 @@ export interface SpokenOptions {
   symbols?: boolean
   /** 호흡(pause) 보강: 구두점 살짝 보강. 기본 true. */
   breath?: boolean
+  /** 날짜(6/22, 2026-06-22) → 한국어 읽기(달 불규칙 유월/시월). 기본 true. */
+  dates?: boolean
+  /** 시각(14:30) → 한국어 읽기(시 고유어·분 한자어). 기본 true. */
+  times?: boolean
+  /** 전화번호(010-1234-5678) → 자리별 음독(0=공). 기본 true. */
+  phones?: boolean
+  /** 영어 서수(3rd) → 한국어 차례(세 번째). 기본 true. */
+  ordinals?: boolean
+  /** 온도(25°C, 98.6°F) → 섭씨/화씨 도. 기본 true. */
+  temperatures?: boolean
 }
 
 const DEFAULT_OPTS: Required<SpokenOptions> = {
@@ -40,6 +53,11 @@ const DEFAULT_OPTS: Required<SpokenOptions> = {
   acronyms: true,
   symbols: true,
   breath: true,
+  dates: true,
+  times: true,
+  phones: true,
+  ordinals: true,
+  temperatures: true,
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -242,6 +260,31 @@ export function toSpoken(text: string, opts?: SpokenOptions): string {
         i++
         continue
       }
+    }
+
+    // ── 1.5) 날짜·시각·전화·순서·온도 매처 (숫자 덩어리보다 먼저!) ──
+    //   이들은 모두 숫자로 시작하므로, 아래 숫자 스캐너가 '6'을 먼저 먹으면 '6/22'가 깨진다.
+    //   각 매처는 idx에서 패턴이 명백할 때만 {ko,len}을 주고, 아니면 null(보수적) → 다음으로.
+    //   우선순위: 날짜 > 시각 > 전화 > 서수 > 온도 (교차 입력은 서로 null이라 순서 안전).
+    if (o.dates) {
+      const m = matchDate(text, i)
+      if (m) { out += m.ko; i += m.len; continue }
+    }
+    if (o.times) {
+      const m = matchTime(text, i)
+      if (m) { out += m.ko; i += m.len; continue }
+    }
+    if (o.phones) {
+      const m = matchPhone(text, i)
+      if (m) { out += m.ko; i += m.len; continue }
+    }
+    if (o.ordinals) {
+      const m = matchOrdinal(text, i)
+      if (m) { out += m.ko; i += m.len; continue }
+    }
+    if (o.temperatures) {
+      const m = matchTemperature(text, i)
+      if (m) { out += m.ko; i += m.len; continue }
     }
 
     // ── 2) 통화 기호가 숫자 앞에 오는 경우($100 -> 백 달러) ──
