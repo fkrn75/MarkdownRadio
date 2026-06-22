@@ -8,7 +8,7 @@
    * 위치(currentChunkIndex)는 App이 engine.on('chunkChange')를 직접 구독해 추적한다.
    * 이렇게 하면 탭(청취/정독)을 전환해 Player가 언마운트돼도 정독뷰 동기 하이라이트가 유지된다.
    */
-  import { buildChunks } from './lib/refine'
+  import { buildChunks, REFINE_VERSION } from './lib/refine'
   import { createEngine, SupertonicEngine, type ModelLoadProgress } from './lib/engine'
   import { qualityToStep } from './lib/engine/supertonicProtocol'
   import { hashText, logEvent } from './lib/instrumentation'
@@ -131,13 +131,24 @@
     // 캐시된 청크가 있으면 재정제 생략, 없으면 즉석 정제(사용자 정제/청크 설정 반영).
     // ⚠️ 향후 정제/청크 옵션을 바꾸는 설정 UI를 추가하면, 캐시(doc.chunks)가 옛 옵션으로
     //    만들어졌을 수 있으니 옵션 해시 비교로 캐시 무효화(재빌드)가 필요하다.
-    const ready =
-      doc.chunks && doc.chunks.length > 0
-        ? doc.chunks
-        : buildChunks(doc.rawText, {
-            refine: settingsStore.value.refine,
-            chunk: settingsStore.value.chunk,
-          }).chunks
+    // 캐시된 청크가 있고, 그 청크를 만든 정제 로직 버전이 현재(REFINE_VERSION)와 같을 때만 재사용.
+    // 코드(발음·운율 등)가 업데이트되면 버전이 올라가 옛 캐시를 버리고 자동 재정제한다.
+    const cacheValid =
+      !!doc.chunks && doc.chunks.length > 0 && doc.refineVersion === REFINE_VERSION
+    let ready: Chunk[]
+    if (cacheValid) {
+      ready = doc.chunks!
+    } else {
+      ready = buildChunks(doc.rawText, {
+        refine: settingsStore.value.refine,
+        chunk: settingsStore.value.chunk,
+      }).chunks
+      // 재정제 결과를 캐시에 반영(다음부턴 재정제 생략). 기존 문서가 새 발음/운율을 갖게 된다.
+      doc.chunks = ready
+      doc.refineVersion = REFINE_VERSION
+      doc.updatedAt = Date.now()
+      await libraryStore.upsert(doc)
+    }
     chunks = ready
     const h = hashText(doc.rawText)
     await engine.load(chunks)
@@ -166,6 +177,7 @@
       title: raw.title,
       rawText: raw.rawText,
       chunks: built,
+      refineVersion: REFINE_VERSION,
       createdAt: now,
       updatedAt: now,
     }

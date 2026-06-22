@@ -17,6 +17,15 @@ export { chunkify } from './chunk.ts'
 export { normalizeForCompare, assertChunkInvariant, collectChunkInvariantViolations } from './invariant.ts'
 
 /**
+ * 정제·청크·발음 로직의 버전. chunks 산출에 영향 주는 로직(발음 규칙·청크 분할·운율)을
+ * 바꿀 때마다 +1 한다. StoredDocument.refineVersion 과 비교해, 코드가 업데이트되면
+ * IndexedDB 에 캐시된 옛 chunks 를 버리고 자동 재정제한다(App.svelte openDocument).
+ *
+ * 이력: 1 = 발음(숫자·날짜·분수·차원 등) + 표 header/annotation + 운율(끊어읽기·강조 속도강조).
+ */
+export const REFINE_VERSION = 1
+
+/**
  * 원문 마크다운을 정제·청크·검증까지 끝낸 결과를 반환한다.
  * @param rawText 원문(.md/.txt 내용)
  * @param opts.refine 정제 옵션(기본 DEFAULT_REFINE_OPTIONS)

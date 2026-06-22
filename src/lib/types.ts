@@ -216,6 +216,8 @@ export interface StoredDocument {
   rawText: string
   cleanBlocks?: CleanBlock[] // 캐시(재정제 생략)
   chunks?: Chunk[]
+  /** chunks 캐시를 만든 정제 로직 버전(REFINE_VERSION). 다르면 코드 업데이트로 보고 재정제한다. */
+  refineVersion?: number
   lastChunkIndex?: number // 이어듣기(위치=청크 인덱스)
   createdAt: number
   updatedAt: number
