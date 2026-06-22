@@ -114,7 +114,8 @@ export interface ChunkOptions {
   silenceAfterHeading: boolean
   /** 헤더 뒤 무음 길이(ms) */
   headingSilenceMs: number
-  /** 의미 단위 끊어읽기: 쉼표·접속부사 경계에서 절을 분할해 또박또박 낭독(기본 true) */
+  /** 의미 단위 끊어읽기: 쉼표·접속부사 경계에서 절을 분할(기본 false — 문장 단위 낭독이 자연스러움.
+   *  200자 초과 긴 문장만 splitLong 이 쉼표에서 자동 분할하므로 과분할 없이 길게 읽힌다) */
   clauseBreak: boolean
   /** 강조(굵게/기울임) 구간을 독립 청크로 떼어 더 천천히 발음(기본 true) */
   emphasisSlowdown: boolean
@@ -127,7 +128,7 @@ export const DEFAULT_CHUNK_OPTIONS: ChunkOptions = {
   minChars: 10,
   silenceAfterHeading: true,
   headingSilenceMs: 1500,
-  clauseBreak: true,
+  clauseBreak: false,
   emphasisSlowdown: true,
   emphasisRate: 0.85,
 }

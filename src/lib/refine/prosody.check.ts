@@ -64,8 +64,9 @@ function runSample(s: Sample, off: boolean): void {
   try {
     const opts = off
       ? { chunk: { ...DEFAULT_CHUNK_OPTIONS, clauseBreak: false, emphasisSlowdown: false }, strict: true as const }
-      : { strict: true as const }
-    // 부분 chunk 옵션은 buildChunks 내부에서 DEFAULT 와 병합된다고 가정(아니면 전체 지정).
+      // 기능 ON 테스트: clauseBreak 는 이제 DEFAULT 가 false(문장 단위 낭독)이므로, 끊어읽기 기능
+      // 자체를 검증하려면 명시적으로 켜서 호출한다(기능은 존재, 기본값만 OFF).
+      : { chunk: { ...DEFAULT_CHUNK_OPTIONS, clauseBreak: true, emphasisSlowdown: true }, strict: true as const }
     const { chunks } = buildChunks(s.md, opts as Parameters<typeof buildChunks>[1])
     const speech = chunks.filter((c) => c.kind === 'speech')
     let emphasis = 0

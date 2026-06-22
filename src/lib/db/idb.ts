@@ -166,12 +166,16 @@ export async function getSettings(): Promise<Settings> {
   const db = await getDB()
   const saved = await db.get('settings', SETTINGS_KEY)
   if (!saved) return { ...DEFAULT_SETTINGS }
-  // 신규 필드 추가 시 하위호환을 위해 기본값 위에 덮어쓴다(중첩 객체도 병합)
+  // 신규 필드 추가 시 하위호환을 위해 기본값 위에 덮어쓴다.
+  // ⚠️ 정제/청크 옵션은 설정 UI 미연결 → 코드 기본값(DEFAULT)이 SSOT.
+  //    과거 persist()(음질·테마 변경 시 settings 전체 저장)로 IndexedDB 에 남은 옛 옵션이
+  //    기본값 변경(예: clauseBreak)을 가리지 않도록 saved 를 무시하고 항상 DEFAULT 를 쓴다.
+  //    (정제/청크 설정 UI 를 붙이면 { ...DEFAULT, ...saved } 병합으로 되돌린다)
   return {
     ...DEFAULT_SETTINGS,
     ...saved,
-    refine: { ...DEFAULT_SETTINGS.refine, ...saved.refine },
-    chunk: { ...DEFAULT_SETTINGS.chunk, ...saved.chunk },
+    refine: { ...DEFAULT_SETTINGS.refine },
+    chunk: { ...DEFAULT_SETTINGS.chunk },
   }
 }
 

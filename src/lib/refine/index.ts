@@ -22,8 +22,9 @@ export { normalizeForCompare, assertChunkInvariant, collectChunkInvariantViolati
  * IndexedDB 에 캐시된 옛 chunks 를 버리고 자동 재정제한다(App.svelte openDocument).
  *
  * 이력: 1 = 발음(숫자·날짜·분수·차원 등) + 표 header/annotation + 운율(끊어읽기·강조 속도강조).
+ *       2 = clauseBreak 기본 OFF(문장 단위 낭독). 쉼표·접속부사 과분할로 너무 짧게 끊기던 것 완화.
  */
-export const REFINE_VERSION = 1
+export const REFINE_VERSION = 2
 
 /**
  * 원문 마크다운을 정제·청크·검증까지 끝낸 결과를 반환한다.
