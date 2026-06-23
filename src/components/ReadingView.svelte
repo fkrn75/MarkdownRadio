@@ -273,14 +273,25 @@
     })
   })
 
+  // 단클릭 seek 는 잠깐 지연했다가, 더블클릭이면 취소한다(아래 handleDblClick).
+  // 즉시 seek 하면 실제 더블클릭의 첫 click 들이 seekToChunk 를 연달아 호출 →
+  // Supertonic 등 엔진이 진행 중 합성을 취소·재시작하며 재생이 씹히는 레이스가 난다.
+  // (청취화면 진행바는 단일 seek 라 무사했음.)
+  let clickSeekTimer: ReturnType<typeof setTimeout> | null = null
+
   // 요소 클릭(또는 Enter/Space) → offset 으로 청크를 찾아 그 지점부터 재생.
   function handleClick(e: MouseEvent): void {
     if (!onSeek) return
+    if (e.detail > 1) return // 더블클릭을 구성하는 2번째 이후 click 은 무시
     const target = (e.target as HTMLElement | null)?.closest('[data-start]') as
       | HTMLElement
       | null
     if (!target || !container || !container.contains(target)) return
-    seekFromElement(target)
+    if (clickSeekTimer) clearTimeout(clickSeekTimer)
+    clickSeekTimer = setTimeout(() => {
+      clickSeekTimer = null
+      seekFromElement(target)
+    }, 250)
   }
 
   function handleKeydown(e: KeyboardEvent): void {
@@ -314,6 +325,11 @@
    */
   function handleDblClick(e: MouseEvent): void {
     if (!onSeekPlay) return
+    // 대기 중인 단클릭 seek 를 취소 → seekToChunk 가 더블클릭의 1번만 호출돼 레이스 제거.
+    if (clickSeekTimer) {
+      clearTimeout(clickSeekTimer)
+      clickSeekTimer = null
+    }
     const target = (e.target as HTMLElement | null)?.closest('[data-start]') as
       | HTMLElement
       | null
