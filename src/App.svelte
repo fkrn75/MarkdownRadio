@@ -34,6 +34,7 @@
   import Uploader from './components/Uploader.svelte'
   import Library from './components/Library.svelte'
   import Player from './components/Player.svelte'
+  import PlaylistQueue from './components/PlaylistQueue.svelte'
   import ReadingView from './components/ReadingView.svelte'
   import BookmarkList from './components/BookmarkList.svelte'
 
@@ -59,7 +60,26 @@
   // (Player 로컬 상태로 두면 탭 전환 시 이중화·불일치 위험 → App 이 소유.)
   let playing = $state(false)
 
+  // ── 재생목록·반복·구간반복(A-B) 상태 ────────────────────────────────────
+  // off=일반(끝나면 정지), one=한 문서 반복, ab=구간(A-B) 반복.
+  type RepeatMode = 'off' | 'one' | 'ab'
+  let repeatMode = $state<RepeatMode>('off')
+  let abStart = $state<number | null>(null) // 구간 시작 청크 인덱스
+  let abEnd = $state<number | null>(null) // 구간 끝 청크 인덱스
+  let abPick = $state<'off' | 'a' | 'b'>('off') // 정독뷰에서 A/B 지점 찍기 모드
+  let playQueue = $state<string[]>([]) // 재생목록 문서 id 순서(빈 배열=없음)
+  let queueIndex = $state(0) // 현재 재생 중 큐 위치(0-based)
+  let showQueue = $state(false) // 재생목록 순서 패널 토글(청취 탭)
+
   const docHash = $derived(curDoc ? hashText(curDoc.rawText) : '')
+
+  // 재생목록 패널 표시용: 문서 id → {id,title}. 라이브러리에서 제목을 찾고, 없으면 id 표시.
+  const queueItems = $derived(
+    playQueue.map((id) => ({
+      id,
+      title: libraryStore.documents.find((d) => d.id === id)?.title ?? id,
+    })),
+  )
 
   // 엔진 위치를 App 에서 직접 추적(탭 전환과 무관하게 정독뷰 동기화 유지)
   // + 이어듣기: 위치 변화를 디바운스(2s)해 IndexedDB(StoredDocument.lastChunkIndex)에 저장.
@@ -68,6 +88,15 @@
   $effect(() => {
     const onChange = (p: EnginePosition) => {
       currentChunkIndex = p.chunkIndex
+      // 구간(A-B) 반복: 끝 청크에 도달하면 시작으로 되감는다(재생 중이면 자동 이어 발화).
+      if (
+        repeatMode === 'ab' &&
+        abEnd != null &&
+        abStart != null &&
+        p.chunkIndex >= abEnd
+      ) {
+        engine.seekToChunk(abStart)
+      }
       if (curDoc) {
         const id = curDoc.id
         const idx = p.chunkIndex
@@ -75,9 +104,35 @@
         lastSaveTimer = setTimeout(() => void updateLastChunkIndex(id, idx), 2000)
       }
     }
-    // 재생 종료(end)는 App 에서 구독해 playing 을 끈다. Player 는 탭 전환 시 언마운트되므로
-    // 여기서 처리해야 정독 탭에서도 종료 후 버튼 상태가 정확히 '재생'으로 돌아온다.
+    // 재생 종료(end)는 App 에서 구독해 다음 동작을 결정한다. Player 는 탭 전환 시 언마운트되므로
+    // 여기서 처리해야 정독 탭에서도 종료 후 버튼 상태가 정확히 반영된다.
+    // 우선순위: 구간반복 → 한 문서 반복 → 재생목록 다음 문서 → 정지.
     const onEnd = () => {
+      if (repeatMode === 'ab' && abStart != null) {
+        engine.seekToChunk(abStart)
+        engine.play()
+        playing = true
+        return
+      }
+      if (repeatMode === 'one') {
+        engine.seekToChunk(0)
+        engine.play()
+        playing = true
+        return
+      }
+      if (playQueue.length > 0 && queueIndex < playQueue.length - 1) {
+        queueIndex++
+        const nextId = playQueue[queueIndex]
+        const nextDoc = libraryStore.documents.find((d) => d.id === nextId)
+        if (nextDoc) {
+          void openDocument(nextDoc).then(() => {
+            engine.play()
+            playing = true
+          })
+          return
+        }
+        // 다음 문서를 못 찾으면 그냥 정지(큐가 깨진 경우).
+      }
       playing = false
     }
     engine.on('chunkChange', onChange)
@@ -105,6 +160,133 @@
     engine.seekToChunk(i)
     engine.play()
     playing = true
+  }
+
+  /**
+   * 정독뷰 단클릭(onSeek): 평소엔 그 청크로 seek.
+   * 단, A-B 찍기 모드(abPick)면 클릭한 청크를 A→B 순서로 구간 양 끝에 기록한다.
+   *  - 'a' 상태: 시작(abStart) 지정 후 'b' 대기.
+   *  - 'b' 상태: 끝 지정 → 시작>끝이면 스왑 → repeatMode='ab' 확정.
+   */
+  function handleSeek(i: number): void {
+    if (abPick === 'a') {
+      abStart = i
+      abPick = 'b'
+    } else if (abPick === 'b') {
+      let s = abStart ?? i
+      let e = i
+      if (e < s) [s, e] = [e, s]
+      abStart = s
+      abEnd = e
+      abPick = 'off'
+      repeatMode = 'ab'
+    } else {
+      engine.seekToChunk(i)
+    }
+  }
+
+  /** 한 문서 반복 토글(청취·정독 공용). 켜면 A-B 구간은 정리. */
+  function onToggleRepeatOne(): void {
+    repeatMode = repeatMode === 'one' ? 'off' : 'one'
+    if (repeatMode === 'one') {
+      abStart = null
+      abEnd = null
+      abPick = 'off'
+    }
+  }
+
+  /** 정독뷰: A-B 구간 지정 시작(시작 찍기 모드 진입). repeatMode는 B 확정 때 'ab'. */
+  function onStartAbPick(): void {
+    abStart = null
+    abEnd = null
+    abPick = 'a'
+  }
+
+  /** A-B 구간 해제(정독뷰). */
+  function onClearAb(): void {
+    if (repeatMode === 'ab') repeatMode = 'off'
+    abStart = null
+    abEnd = null
+    abPick = 'off'
+  }
+
+  /**
+   * 청취화면 A-B 버튼(현재 청크 기준 1버튼): 해제 → A 지정 → B 지정(=확정) 순환.
+   *  - 이미 ab면: 해제(off).
+   *  - abStart 없음: 현재 청크를 시작으로.
+   *  - abStart 있음: 현재 청크를 끝으로(시작>끝이면 스왑) → repeatMode='ab' 확정.
+   */
+  function onAbButton(): void {
+    if (repeatMode === 'ab') {
+      repeatMode = 'off'
+      abStart = null
+      abEnd = null
+      return
+    }
+    if (abStart === null) {
+      abStart = currentChunkIndex
+      return
+    }
+    let s = abStart
+    let e = currentChunkIndex
+    if (e < s) [s, e] = [e, s]
+    abStart = s
+    abEnd = e
+    repeatMode = 'ab'
+  }
+
+  /** 재생목록(여러 문서 순차 재생): 큐 세팅 후 첫 문서를 열어 자동 재생. */
+  async function handlePlaylist(ids: string[]): Promise<void> {
+    if (!ids.length) return
+    playQueue = ids
+    queueIndex = 0
+    const doc = libraryStore.documents.find((d) => d.id === ids[0])
+    if (doc) {
+      await openDocument(doc)
+      engine.play()
+      playing = true
+    }
+  }
+
+  // ── 재생목록 순서 조작(▲▼·제거·점프) ───────────────────────────────────
+  // ⚠️ 핵심 불변식: reorder/remove 는 배열과 queueIndex 만 바꾼다(engine/openDocument 미호출).
+  //    현재 재생 중인 문서가 끊기지 않아야 하므로 오직 qJump 만 문서를 전환한다.
+
+  /** ▲ i번째 항목을 한 칸 위로. 현재 재생 위치(queueIndex)는 교환에 맞춰 보정. */
+  function qMoveUp(i: number): void {
+    if (i <= 0) return
+    const a = [...playQueue]
+    ;[a[i - 1], a[i]] = [a[i], a[i - 1]]
+    playQueue = a
+    if (queueIndex === i) queueIndex = i - 1
+    else if (queueIndex === i - 1) queueIndex = i
+  }
+
+  /** ▼ i번째 항목을 한 칸 아래로. queueIndex 보정 동일. */
+  function qMoveDown(i: number): void {
+    if (i >= playQueue.length - 1) return
+    const a = [...playQueue]
+    ;[a[i + 1], a[i]] = [a[i], a[i + 1]]
+    playQueue = a
+    if (queueIndex === i) queueIndex = i + 1
+    else if (queueIndex === i + 1) queueIndex = i
+  }
+
+  /** ✕ i번째 항목 제거. 현재 재생 항목은 제거하지 않는다(패널에서도 disabled). */
+  function qRemove(i: number): void {
+    if (i === queueIndex) return // 현재 재생 항목은 제거 안 함
+    const a = [...playQueue]
+    a.splice(i, 1)
+    playQueue = a
+    if (i < queueIndex) queueIndex -= 1 // 앞 항목 제거 시 현재 위치 보정
+  }
+
+  /** ▶ i번째 항목으로 점프(문서 전환 + 재생). 유일하게 engine/openDocument 를 호출. */
+  function qJump(i: number): void {
+    if (i < 0 || i >= playQueue.length) return
+    queueIndex = i
+    const doc = libraryStore.documents.find((d) => d.id === playQueue[i])
+    if (doc) void openDocument(doc).then(() => { engine.play(); playing = true })
   }
 
   // 설정의 음성(voiceURI)을 엔진에 반영(없으면 null = 남성 우선 기본)
@@ -157,6 +339,12 @@
   /** 문서를 열어 청크 준비 + 엔진 로드 + 플레이어 진입 */
   async function openDocument(doc: StoredDocument) {
     curDoc = doc
+    // 새 문서이므로 A-B 구간만 정리한다(이전 문서의 청크 인덱스라 무의미).
+    // ⚠️ repeatMode/playQueue/queueIndex 는 호출자(재생목록 onEnd·handlePlaylist)가
+    //    관리한다. 여기서 리셋하면 재생목록 다음 곡으로 넘어갈 때 큐가 끊긴다.
+    abStart = null
+    abEnd = null
+    abPick = 'off'
     // 캐시된 청크가 있으면 재정제 생략, 없으면 즉석 정제(사용자 정제/청크 설정 반영).
     // ⚠️ 향후 정제/청크 옵션을 바꾸는 설정 UI를 추가하면, 캐시(doc.chunks)가 옛 옵션으로
     //    만들어졌을 수 있으니 옵션 해시 비교로 캐시 무효화(재빌드)가 필요하다.
@@ -216,6 +404,9 @@
   }
 
   async function handleSelect(id: string) {
+    // 라이브러리 단클릭 = 단일 재생: 진행 중이던 재생목록을 비운다.
+    playQueue = []
+    queueIndex = 0
     const doc = await getDocument(id)
     if (doc) await openDocument(doc)
   }
@@ -253,6 +444,14 @@
   function goHome() {
     engine.stop()
     playing = false
+    // 홈으로 나갈 때 반복·구간·재생목록 상태를 전부 초기화한다.
+    repeatMode = 'off'
+    abStart = null
+    abEnd = null
+    abPick = 'off'
+    playQueue = []
+    queueIndex = 0
+    showQueue = false
     view = 'home'
     libraryStore.refresh()
   }
@@ -316,7 +515,7 @@
         </div>
       {/if}
       <Uploader onload={handleUpload} />
-      <Library onselect={handleSelect} />
+      <Library onselect={handleSelect} onplaylist={handlePlaylist} />
     </section>
   {:else if curDoc}
     <div class="tabs" role="tablist">
@@ -329,6 +528,17 @@
 
     <section class="content">
       {#if tab === 'listen'}
+        {#if showQueue && playQueue.length > 1}
+          <PlaylistQueue
+            items={queueItems}
+            currentIndex={queueIndex}
+            onMoveUp={qMoveUp}
+            onMoveDown={qMoveDown}
+            onRemove={qRemove}
+            onJump={qJump}
+            onClose={() => (showQueue = false)}
+          />
+        {/if}
         <Player
           {chunks}
           {engine}
@@ -337,6 +547,14 @@
           docId={curDoc.id}
           {docHash}
           onBookmark={handleBookmark}
+          {repeatMode}
+          {abStart}
+          {abEnd}
+          queuePos={playQueue.length > 1 ? { index: queueIndex, total: playQueue.length } : null}
+          {onToggleRepeatOne}
+          {onAbButton}
+          queueLen={playQueue.length}
+          onToggleQueue={() => (showQueue = !showQueue)}
         />
       {:else if tab === 'read'}
         <ReadingView
@@ -347,10 +565,17 @@
           {jumpOffset}
           {playing}
           onTogglePlay={togglePlay}
-          onSeek={(i) => engine.seekToChunk(i)}
+          onSeek={handleSeek}
           onSeekPlay={seekAndPlay}
           docId={curDoc.id}
           {docHash}
+          {repeatMode}
+          {abStart}
+          {abEnd}
+          {abPick}
+          {onToggleRepeatOne}
+          {onStartAbPick}
+          {onClearAb}
         />
       {:else}
         <BookmarkList

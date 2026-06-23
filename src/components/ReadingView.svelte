@@ -55,6 +55,22 @@
     /** 계측용 문서 식별(read_scroll). 없으면 스크롤 계측 생략. */
     docId?: string
     docHash?: string
+
+    // ── 반복/구간반복(상태·로직은 App 소유, 여기선 표시·버튼·힌트만) ──
+    /** 반복 모드: off=없음, one=한 문서 반복, ab=구간(A-B) 반복. */
+    repeatMode?: 'off' | 'one' | 'ab'
+    /** 구간 반복 시작(A) 청크 인덱스(0-base). 미지정이면 null. */
+    abStart?: number | null
+    /** 구간 반복 끝(B) 청크 인덱스(0-base). 미지정이면 null. */
+    abEnd?: number | null
+    /** 구간 지정 진행 상태: off=대기, a=시작(A) 클릭 대기, b=끝(B) 클릭 대기. */
+    abPick?: 'off' | 'a' | 'b'
+    /** 🔁 한 문서 반복 토글(App 이 repeatMode 갱신). */
+    onToggleRepeatOne?: () => void
+    /** 구간 반복 시작 → 문장 클릭(onSeek)으로 A·B 지정(App 이 abPick 전이). */
+    onStartAbPick?: () => void
+    /** 구간 반복 해제(App 이 repeatMode='off' + abStart/abEnd 리셋). */
+    onClearAb?: () => void
   }
 
   let {
@@ -69,6 +85,13 @@
     onSeekPlay,
     docId,
     docHash,
+    repeatMode = 'off',
+    abStart = null,
+    abEnd = null,
+    abPick = 'off',
+    onToggleRepeatOne,
+    onStartAbPick,
+    onClearAb,
   }: Props = $props()
 
   // 컨테이너/렌더 호스트 참조
@@ -370,7 +393,57 @@
         <span class="ico" aria-hidden="true">{playing ? '⏸' : '▶'}</span>
         <span class="lbl">{playing ? '일시정지' : '재생'}</span>
       </button>
-      <span class="read-hint">더블클릭한 위치부터 재생</span>
+
+      <!-- 한 문서 반복 토글 -->
+      {#if onToggleRepeatOne}
+        <button
+          type="button"
+          class="ctrl"
+          class:active={repeatMode === 'one'}
+          onclick={onToggleRepeatOne}
+          title="한 문서 반복"
+          aria-label="한 문서 반복"
+        >
+          🔁
+        </button>
+      {/if}
+
+      <!-- 구간 반복: 활성이면 해제, 아니면 시작(문장 클릭으로 A·B 지정) -->
+      {#if repeatMode === 'ab'}
+        {#if onClearAb}
+          <button
+            type="button"
+            class="ctrl active"
+            onclick={onClearAb}
+            title="구간 반복 해제"
+            aria-label="구간 반복 해제"
+          >
+            ↔ 구간 해제
+          </button>
+        {/if}
+      {:else if onStartAbPick}
+        <button
+          type="button"
+          class="ctrl"
+          class:active={abPick !== 'off'}
+          onclick={onStartAbPick}
+          title="구간 반복"
+          aria-label="구간 반복"
+        >
+          ↔ 구간 반복
+        </button>
+      {/if}
+
+      <!-- A-B 지정 안내(찍는 중) / 구간 정보(확정 후) / 기본 힌트 -->
+      {#if abPick === 'a'}
+        <span class="read-hint">반복 시작(A) 지점을 클릭하세요</span>
+      {:else if abPick === 'b'}
+        <span class="read-hint">반복 끝(B) 지점을 클릭하세요</span>
+      {:else if repeatMode === 'ab' && abStart != null && abEnd != null}
+        <span class="read-hint ab-range">구간 반복 A:{abStart + 1} → B:{abEnd + 1}</span>
+      {:else}
+        <span class="read-hint">더블클릭한 위치부터 재생</span>
+      {/if}
     </div>
   {/if}
 
@@ -424,9 +497,33 @@
   .read-play:hover {
     filter: brightness(1.05);
   }
+  /* 반복/구간반복 버튼(청취 화면 .ctrl 과 시각 일관) */
+  .read-controls .ctrl {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    padding: 0.5rem 0.7rem;
+    font-size: 0.9rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .read-controls .ctrl:hover {
+    border-color: var(--accent);
+  }
+  .read-controls .ctrl.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
   .read-hint {
     font-size: 0.8rem;
     color: var(--text-muted);
+  }
+  .read-hint.ab-range {
+    color: var(--accent);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
   }
 
   .reading {

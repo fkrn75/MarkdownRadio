@@ -416,6 +416,52 @@ interface InstrumentationEvent {
 
 ---
 
+## FN-14 · 재생목록 (순차 재생) ✅ 구현됨
+
+라이브러리에서 여러 문서를 골라 라디오처럼 **연속으로 흘려듣는다**.
+
+### 동작
+- ✅ **구현됨** 라이브러리에서 문서 카드 좌측 **체크박스로 다중 선택** → 하단 "▶ N개 재생목록 재생" 버튼.
+- ✅ **구현됨** App 이 선택 문서 id 큐(`playQueue`)와 현재 인덱스(`queueIndex`)를 보유. 한 문서가 끝나면(`onEnd`) **다음 문서를 자동 로드+재생**.
+- ✅ **구현됨** 청취 화면에 "재생목록 i/total" 진행 표시.
+
+### 구현 메모
+- 상태(`playQueue`/`queueIndex`)는 모두 **App.svelte 집중**. 엔진(`seekToChunk`/`play`)은 **재사용**하고 내부 무수정. offset 불변식(`refine/`·`chunk.ts`·`types.ts`) 무수정.
+
+---
+
+## FN-15 · 반복 재생 (한 문서 / 구간 A-B) ✅ 구현됨
+
+같은 문서나 특정 구간을 **반복 청취**한다(암기·정독 보조).
+
+### 동작
+- ✅ **구현됨** **한 문서 반복(🔁)**: 청취·정독 양쪽 토글. `repeatMode='one'` 일 때 문서 끝(`onEnd`)에서 `seekToChunk(0)` 후 재생.
+- ✅ **구현됨** **구간 반복(A-B, ↔)**: `repeatMode='ab'` + `abStart`/`abEnd`(청크 인덱스).
+  - 청취 화면: 현재 청크 기준 **A → B → 해제** 1버튼 토글.
+  - 정독 화면: **텍스트 클릭으로 A/B 지점 지정**(기존 `onSeek`/`data-start` 재활용, `abPick` 상태로 A·B 순차 지정).
+  - `chunkChange` 에서 현재 청크가 `abEnd` 를 넘으면 `abStart` 로 `seekToChunk` → 구간 루프.
+
+### 구현 메모
+- 상태(`repeatMode`/`abStart`/`abEnd`/`abPick`)는 **App.svelte 집중**. 엔진 재사용·내부 무수정. offset 불변식 무수정.
+
+---
+
+## FN-16 · 재생목록 순서 변경 (큐 패널) ✅ 구현됨
+
+재생목록을 **청취 중에 재배열·정리**한다.
+
+### 동작
+- ✅ **구현됨** 신규 `PlaylistQueue.svelte` 패널(청취 화면, **재생목록 2개+일 때** 노출).
+- ✅ **구현됨** 항목 **▲▼ 순서변경 · ✕ 제거 · 클릭 점프**.
+- ✅ **구현됨** **현재 재생 항목 추적**: reorder/제거 시 `queueIndex` 를 보정해 **현재 문서가 끊기지 않게** 함(engine 미호출). 현재 항목은 **제거 차단(disabled)**.
+
+### 구현 메모
+- 큐 조작은 App 의 `playQueue`/`queueIndex` 만 갱신하고 **engine 미호출**(현재 재생 무중단). offset 불변식 무수정.
+
+> **재생목록 4기능 공통**: 상태는 모두 App.svelte 집중(`repeatMode`/`abStart`/`abEnd`/`abPick`/`playQueue`/`queueIndex`), 엔진(`seekToChunk`/`play`) 재사용·내부 무수정, offset 불변식(`refine/`·`chunk.ts`·`types.ts`) 무수정. 변경 파일 5개 — `PlaylistQueue.svelte`(신규) + `App`·`Library`·`Player`·`ReadingView`(수정). svelte-check 561/0/0 · build · invariant OK.
+
+---
+
 ## 데이터 저장소 요약 (IndexedDB)
 
 | Store | 키 | 내용 |

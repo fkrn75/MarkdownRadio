@@ -241,6 +241,13 @@
 - [ ] 현재 문장 하이라이트(원문 동기)
 - [ ] (P1) 15초 점프, 키보드 단축키(Space/←→/↑↓/B)
 
+### 5.4 재생목록 · 반복 FN-14/15/16 (P1)
+- [x] **재생목록(순차 재생)** — 라이브러리 체크박스 다중선택 → "N개 재생목록 재생", 문서 끝나면 다음 자동 로드+재생, "재생목록 i/total" 표시 (App `playQueue`/`queueIndex`)
+- [x] **한 문서 반복(🔁)** — 청취·정독 토글, 끝나면 `seekToChunk(0)` 재생 (`repeatMode='one'`)
+- [x] **구간 반복(A-B, ↔)** — 청취=A→B→해제 1버튼 / 정독=텍스트 클릭으로 A·B 지정, `chunkChange`에서 끝 청크 넘으면 시작으로 복귀 (`repeatMode='ab'`, `abStart`/`abEnd`/`abPick`)
+- [x] **재생목록 순서 변경(📋)** — `PlaylistQueue.svelte` 패널(▲▼ 순서변경·✕ 제거·클릭 점프), 현재 항목 추적(`queueIndex` 보정)으로 무중단, 현재 항목 제거 차단
+- [x] 상태 App 집중 · 엔진(`seekToChunk`/`play`) 재사용·무수정 · offset 불변식 무수정 · 5파일(`PlaylistQueue` 신규 + `App`/`Library`/`Player`/`ReadingView`) · svelte-check 561/0/0·build·invariant OK
+
 ---
 
 ## Phase 6 · 배속 (P1 — MVP 제외)

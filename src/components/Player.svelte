@@ -28,10 +28,44 @@
     onBookmark: (b: Bookmark) => void
     /** 현재 청크 변경 통지(상위가 정독뷰 동기화 등에 사용). 선택. */
     onChunkChange?: (chunkIndex: number) => void
+
+    // ── 반복/구간반복/재생목록(상태·로직은 App 소유, 여기선 표시·버튼만) ──
+    /** 반복 모드: off=없음, one=한 문서 반복, ab=구간(A-B) 반복. */
+    repeatMode: 'off' | 'one' | 'ab'
+    /** 구간 반복 시작(A) 청크 인덱스(0-base). 미지정이면 null. */
+    abStart: number | null
+    /** 구간 반복 끝(B) 청크 인덱스(0-base). 미지정이면 null. */
+    abEnd: number | null
+    /** 재생목록 진행(현재/전체). 재생목록이 없으면 null. */
+    queuePos: { index: number; total: number } | null
+    /** 🔁 한 문서 반복 토글(App 이 repeatMode 갱신). */
+    onToggleRepeatOne: () => void
+    /** ↔ 구간 반복 버튼(현재 청크 기준 A→B→해제 순환; App 이 처리). */
+    onAbButton: () => void
+    /** 재생목록 길이(2 이상일 때만 순서 토글 버튼 노출). */
+    queueLen?: number
+    /** 📋 재생목록 순서 패널 토글(App 이 showQueue 갱신). */
+    onToggleQueue?: () => void
   }
 
-  let { chunks, engine, playing, onTogglePlay, docId, docHash, onBookmark, onChunkChange }: Props =
-    $props()
+  let {
+    chunks,
+    engine,
+    playing,
+    onTogglePlay,
+    docId,
+    docHash,
+    onBookmark,
+    onChunkChange,
+    repeatMode,
+    abStart,
+    abEnd,
+    queuePos,
+    onToggleRepeatOne,
+    onAbButton,
+    queueLen = 0,
+    onToggleQueue,
+  }: Props = $props()
 
   // ── 재생 상태(룬) ───────────────────────────────────────────
   // playing 은 App 소유(props). 종료(end)도 App 이 구독해 끈다(탭 전환 시 일관성).
@@ -66,6 +100,15 @@
   let current = $derived<Chunk | undefined>(chunks[cur])
   /** 진행률 0~1(파생). 청크 인덱스 기반(시간 아님). */
   let progress = $derived(chunks.length > 1 ? cur / (chunks.length - 1) : 0)
+
+  /** ↔ 구간 반복 버튼 라벨(다음 동작 안내). off→A 지정, A만 있으면→B 지정, ab→해제. */
+  let abLabel = $derived(
+    repeatMode === 'ab'
+      ? '구간 반복 해제'
+      : abStart != null
+        ? '구간 끝(B) 지점 지정'
+        : '구간 시작(A) 지점 지정',
+  )
 
   const RATES = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
 
@@ -235,6 +278,18 @@
 </script>
 
 <div class="player">
+  <!-- 재생목록 진행(있을 때만). 작은 보조 텍스트. -->
+  {#if queuePos}
+    <div class="queue-status" aria-live="polite">
+      재생목록 {queuePos.index + 1} / {queuePos.total}
+    </div>
+  {/if}
+
+  <!-- 구간 반복 활성 표시(A·B 모두 지정 시). -->
+  {#if repeatMode === 'ab' && abStart != null && abEnd != null}
+    <div class="ab-info" aria-live="polite">구간반복 {abStart + 1}–{abEnd + 1}</div>
+  {/if}
+
   <!-- 현재 읽는 문장 하이라이트 영역(원문 동기화는 정독뷰, 여기는 정제 텍스트) -->
   <div class="now-reading" aria-live="polite">
     {#if current}
@@ -303,6 +358,30 @@
       </div>
     {/if}
 
+    <!-- 한 문서 반복 토글 -->
+    <button
+      type="button"
+      class="ctrl"
+      class:active={repeatMode === 'one'}
+      onclick={onToggleRepeatOne}
+      title="한 문서 반복"
+      aria-label="한 문서 반복"
+    >
+      🔁
+    </button>
+
+    <!-- 구간 반복(현재 청크 기준 A→B→해제) -->
+    <button
+      type="button"
+      class="ctrl"
+      class:active={repeatMode === 'ab'}
+      onclick={onAbButton}
+      title={abLabel}
+      aria-label="구간 반복"
+    >
+      ↔
+    </button>
+
     <!-- 북마크 -->
     <button
       type="button"
@@ -314,6 +393,19 @@
     >
       🔖
     </button>
+
+    <!-- 재생목록 순서(2개 이상일 때만): 패널 토글 -->
+    {#if queueLen > 1}
+      <button
+        type="button"
+        class="ctrl"
+        onclick={onToggleQueue}
+        aria-label="재생목록 순서"
+        title="재생목록 순서"
+      >
+        📋
+      </button>
+    {/if}
   </div>
 
   {#if bookmarked}
@@ -407,6 +499,25 @@
   .ctrl.bookmark.flash {
     background: var(--highlight-bookmark);
     border-color: var(--warn);
+  }
+  /* 반복/구간반복 활성 상태(accent 강조) */
+  .ctrl.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+
+  /* 재생목록 진행 / 구간반복 보조 텍스트 */
+  .queue-status,
+  .ab-info {
+    text-align: center;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .ab-info {
+    color: var(--accent);
+    font-weight: 600;
   }
   .rate select {
     border: 1px solid var(--border);
