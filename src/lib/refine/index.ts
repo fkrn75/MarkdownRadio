@@ -23,8 +23,9 @@ export { normalizeForCompare, assertChunkInvariant, collectChunkInvariantViolati
  *
  * 이력: 1 = 발음(숫자·날짜·분수·차원 등) + 표 header/annotation + 운율(끊어읽기·강조 속도강조).
  *       2 = clauseBreak 기본 OFF(문장 단위 낭독). 쉼표·접속부사 과분할로 너무 짧게 끊기던 것 완화.
+ *       3 = emphasisSlowdown 기본 OFF. 강조어(굵게/기울임) 청크 분리가 문장을 토막내 끊김을 유발 → OFF.
  */
-export const REFINE_VERSION = 2
+export const REFINE_VERSION = 3
 
 /**
  * 원문 마크다운을 정제·청크·검증까지 끝낸 결과를 반환한다.

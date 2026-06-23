@@ -117,7 +117,7 @@ export interface ChunkOptions {
   /** 의미 단위 끊어읽기: 쉼표·접속부사 경계에서 절을 분할(기본 false — 문장 단위 낭독이 자연스러움.
    *  200자 초과 긴 문장만 splitLong 이 쉼표에서 자동 분할하므로 과분할 없이 길게 읽힌다) */
   clauseBreak: boolean
-  /** 강조(굵게/기울임) 구간을 독립 청크로 떼어 더 천천히 발음(기본 true) */
+  /** 강조(굵게/기울임) 구간을 독립 청크로 떼어 더 천천히 발음(기본 false — 강조 분리가 문장을 토막내 끊김을 유발해 OFF) */
   emphasisSlowdown: boolean
   /** 강조 청크 속도 배율(기본 0.85, 작을수록 느림). emphasisSlowdown=true일 때만 적용 */
   emphasisRate: number
@@ -129,7 +129,7 @@ export const DEFAULT_CHUNK_OPTIONS: ChunkOptions = {
   silenceAfterHeading: true,
   headingSilenceMs: 1500,
   clauseBreak: false,
-  emphasisSlowdown: true,
+  emphasisSlowdown: false,
   emphasisRate: 0.85,
 }
 
