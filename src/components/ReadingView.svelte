@@ -44,8 +44,14 @@
     currentChunkIndex?: number
     /** 북마크 점프 등으로 지정된 원문 오프셋(스크롤 대상). */
     jumpOffset?: number
+    /** 재생 상태(App 단일 소스). 정독 화면 재생/일시정지 버튼 표시용. */
+    playing?: boolean
+    /** 재생/일시정지 토글(App 이 engine.pause()/play() + playing 갱신). 있으면 버튼 노출. */
+    onTogglePlay?: () => void
     /** 문장(요소) 클릭 → 해당 청크부터 재생(역방향 연결, SHOULD). */
     onSeek?: (chunkIndex: number) => void
+    /** 문장(요소) 더블클릭 → 그 청크부터 즉시 재생(seek + play). */
+    onSeekPlay?: (chunkIndex: number) => void
     /** 계측용 문서 식별(read_scroll). 없으면 스크롤 계측 생략. */
     docId?: string
     docHash?: string
@@ -57,7 +63,10 @@
     bookmarks = [],
     currentChunkIndex,
     jumpOffset,
+    playing = false,
+    onTogglePlay,
     onSeek,
+    onSeekPlay,
     docId,
     docHash,
   }: Props = $props()
@@ -295,6 +304,28 @@
     if (idx >= 0) onSeek?.(idx)
   }
 
+  /**
+   * 더블클릭 → 그 위치의 청크부터 즉시 재생(seek + play).
+   * 단클릭 onSeek(seek만)과 별개로, 더블클릭은 "여기서 들을래"라는 강한 의도이므로 재생까지 시작한다.
+   * (click + dblclick 둘 다 발화해도 seek → seek+play 로 수렴해 무해.)
+   *
+   * offset 획득: caretRangeFromPoint 는 DOM 에 마크다운 마커가 없어 절대 offset 변환이 불가하므로,
+   * 단클릭과 동일하게 가장 가까운 [data-start] 요소의 시작 offset 을 사용한다.
+   */
+  function handleDblClick(e: MouseEvent): void {
+    if (!onSeekPlay) return
+    const target = (e.target as HTMLElement | null)?.closest('[data-start]') as
+      | HTMLElement
+      | null
+    if (!target || !container || !container.contains(target)) return
+    // 더블클릭으로 잡힌 단어 선택은 해제(읽기 흐름 방해 방지).
+    window.getSelection()?.removeAllRanges()
+    const start = Number(target.dataset.start)
+    if (!Number.isFinite(start)) return
+    const idx = chunkIndexForOffset(chunks, start)
+    if (idx >= 0) onSeekPlay(idx)
+  }
+
   // 스크롤 계측(read_scroll, 패시브). 과도 호출 방지 위해 쓰로틀.
   let scrollThrottle = 0
   function onScroll(): void {
@@ -308,22 +339,80 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<div
-  class="reading"
-  class:seekable={!!onSeek}
-  bind:this={container}
-  onscroll={onScroll}
-  onclick={handleClick}
-  onkeydown={handleKeydown}
->
-  <article class="doc markdown-body" bind:this={articleEl}>
-    <MarkdownNode node={tree} />
-  </article>
+<div class="reading-wrap">
+  {#if onTogglePlay}
+    <!-- 정독 중 재생/일시정지(청취 화면 버튼과 시각 일관). 더블클릭으로 시작한 재생을 여기서 멈출 수 있다. -->
+    <div class="read-controls">
+      <button
+        type="button"
+        class="read-play"
+        class:playing
+        onclick={onTogglePlay}
+        aria-label={playing ? '일시정지' : '재생'}
+        title="재생/일시정지"
+      >
+        <span class="ico" aria-hidden="true">{playing ? '⏸' : '▶'}</span>
+        <span class="lbl">{playing ? '일시정지' : '재생'}</span>
+      </button>
+      <span class="read-hint">더블클릭한 위치부터 재생</span>
+    </div>
+  {/if}
+
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <div
+    class="reading"
+    class:seekable={!!onSeek}
+    bind:this={container}
+    onscroll={onScroll}
+    onclick={handleClick}
+    ondblclick={handleDblClick}
+    onkeydown={handleKeydown}
+  >
+    <article class="doc markdown-body" bind:this={articleEl}>
+      <MarkdownNode node={tree} />
+    </article>
+  </div>
 </div>
 
 <style>
+  .reading-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+
+  /* 정독 재생 컨트롤 바(컨테이너 위, 청취 화면 버튼과 시각 일관) */
+  .read-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+  }
+  .read-play {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--accent);
+    color: #fff;
+    padding: 0.5rem 0.9rem;
+    font-size: 0.95rem;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .read-play .ico {
+    font-size: 1.05rem;
+  }
+  .read-play:hover {
+    filter: brightness(1.05);
+  }
+  .read-hint {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+
   .reading {
     width: 100%;
     max-height: 60vh;

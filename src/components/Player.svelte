@@ -16,6 +16,10 @@
   interface Props {
     chunks: Chunk[]
     engine: RadioEngine
+    /** 재생 상태(App 단일 소스). 청취·정독이 같은 상태를 공유한다. */
+    playing: boolean
+    /** 재생/일시정지 토글(App 이 engine.pause()/play() + playing 갱신). */
+    onTogglePlay: () => void
     /** 문서 식별(계측·북마크 documentId). */
     docId: string
     /** 원문 해시(계측 docHash). hashText(rawText) 결과를 상위가 전달. */
@@ -26,10 +30,11 @@
     onChunkChange?: (chunkIndex: number) => void
   }
 
-  let { chunks, engine, docId, docHash, onBookmark, onChunkChange }: Props = $props()
+  let { chunks, engine, playing, onTogglePlay, docId, docHash, onBookmark, onChunkChange }: Props =
+    $props()
 
   // ── 재생 상태(룬) ───────────────────────────────────────────
-  let playing = $state(false)
+  // playing 은 App 소유(props). 종료(end)도 App 이 구독해 끈다(탭 전환 시 일관성).
   let cur = $state(0) // 현재 청크 인덱스(위치의 진실)
   let rate = $state(settingsStore.value.rate)
 
@@ -70,20 +75,16 @@
     cur = p.chunkIndex
     onChunkChange?.(p.chunkIndex)
   }
-  function onEngineEnd(): void {
-    playing = false
-  }
 
   // engine 인스턴스가 바뀌면(문서 전환) 구독을 재설정.
+  // 'end'(재생 종료)는 App 이 구독해 playing 을 끈다(여기서 중복 구독하지 않음).
   $effect(() => {
     const e = engine
     e.on('chunkChange', onEngineChunkChange)
-    e.on('end', onEngineEnd)
     // 초기 위치 동기화
     cur = e.position.chunkIndex
     return () => {
       e.off('chunkChange', onEngineChunkChange)
-      e.off('end', onEngineEnd)
     }
   })
 
@@ -93,15 +94,7 @@
   })
 
   // ── 컨트롤 동작 ─────────────────────────────────────────────
-  function togglePlay(): void {
-    if (playing) {
-      engine.pause()
-      playing = false
-    } else {
-      engine.play()
-      playing = true
-    }
-  }
+  // 재생/일시정지 토글은 App(onTogglePlay)이 단일 소스로 처리한다.
 
   /** 이전 문장: 무음 청크는 건너뛰며 직전 speech 청크로(없으면 0). */
   function prev(): void {
@@ -149,10 +142,8 @@
     if (!Number.isFinite(idx)) return
     engine.seekToChunk(idx)
     cur = idx
-    if (!playing) {
-      engine.play()
-      playing = true
-    }
+    // 정지 중이었으면 이 지점부터 재생 시작(playing 은 App 소유 → onTogglePlay 경유로 켠다).
+    if (!playing) onTogglePlay()
     logEvent('manual_seek', { docId, docHash, chunkIndex: idx })
   }
 
@@ -211,7 +202,7 @@
     switch (e.key) {
       case ' ':
         e.preventDefault()
-        togglePlay()
+        onTogglePlay()
         break
       case 'ArrowLeft':
         e.preventDefault()
@@ -282,7 +273,7 @@
     <button
       type="button"
       class="ctrl play"
-      onclick={togglePlay}
+      onclick={onTogglePlay}
       aria-label={playing ? '일시정지' : '재생'}
       title="재생/일시정지 (Space)"
     >

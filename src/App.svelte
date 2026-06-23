@@ -55,6 +55,9 @@
   let bookmarks = $state<Bookmark[]>([])
   let currentChunkIndex = $state(0)
   let jumpOffset = $state<number | undefined>(undefined)
+  // 재생 상태 단일 소스(청취·정독 공용). 엔진엔 pause 이벤트가 없어 함수 경유로만 갱신한다.
+  // (Player 로컬 상태로 두면 탭 전환 시 이중화·불일치 위험 → App 이 소유.)
+  let playing = $state(false)
 
   const docHash = $derived(curDoc ? hashText(curDoc.rawText) : '')
 
@@ -72,12 +75,37 @@
         lastSaveTimer = setTimeout(() => void updateLastChunkIndex(id, idx), 2000)
       }
     }
+    // 재생 종료(end)는 App 에서 구독해 playing 을 끈다. Player 는 탭 전환 시 언마운트되므로
+    // 여기서 처리해야 정독 탭에서도 종료 후 버튼 상태가 정확히 '재생'으로 돌아온다.
+    const onEnd = () => {
+      playing = false
+    }
     engine.on('chunkChange', onChange)
+    engine.on('end', onEnd)
     return () => {
       engine.off('chunkChange', onChange)
+      engine.off('end', onEnd)
       clearTimeout(lastSaveTimer)
     }
   })
+
+  /** 재생/일시정지 토글(청취·정독 공용 단일 소스). */
+  function togglePlay(): void {
+    if (playing) {
+      engine.pause()
+      playing = false
+    } else {
+      engine.play()
+      playing = true
+    }
+  }
+
+  /** 정독뷰: 더블클릭/문장 → 그 청크부터 즉시 재생(seek + play). */
+  function seekAndPlay(i: number): void {
+    engine.seekToChunk(i)
+    engine.play()
+    playing = true
+  }
 
   // 설정의 음성(voiceURI)을 엔진에 반영(없으면 null = 남성 우선 기본)
   $effect(() => {
@@ -112,6 +140,7 @@
   async function setEngineKind(kind: EngineKind): Promise<void> {
     if (kind === settingsStore.value.engine) return
     engine.stop()
+    playing = false
     if (engine instanceof SupertonicEngine) engine.dispose()
     modelProgress = null
     modelError = null
@@ -159,6 +188,7 @@
     const resume = doc.lastChunkIndex && doc.lastChunkIndex > 0 ? doc.lastChunkIndex : 0
     currentChunkIndex = resume
     if (resume > 0) engine.seekToChunk(resume)
+    playing = false // 새 문서는 정지 상태로 진입(재생은 사용자 조작)
     jumpOffset = undefined
     tab = 'listen'
     view = 'player'
@@ -222,6 +252,7 @@
 
   function goHome() {
     engine.stop()
+    playing = false
     view = 'home'
     libraryStore.refresh()
   }
@@ -301,6 +332,8 @@
         <Player
           {chunks}
           {engine}
+          {playing}
+          onTogglePlay={togglePlay}
           docId={curDoc.id}
           {docHash}
           onBookmark={handleBookmark}
@@ -312,7 +345,10 @@
           {bookmarks}
           {currentChunkIndex}
           {jumpOffset}
+          {playing}
+          onTogglePlay={togglePlay}
           onSeek={(i) => engine.seekToChunk(i)}
+          onSeekPlay={seekAndPlay}
           docId={curDoc.id}
           {docHash}
         />
