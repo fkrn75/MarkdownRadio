@@ -13,18 +13,38 @@ export function installDebugOverlay(): void {
 
   const box = document.createElement('div')
   box.id = '__dbg_overlay'
+  // ⚠️ box 는 pointer-events:none — 로그가 화면 하단을 덮어도 클릭이 '밑의 앱(재생 버튼 등)'으로
+  //    그대로 통과한다(로그창 때문에 컨트롤을 못 누르는 문제 방지). 아래 툴바 버튼만 auto 로 되살린다.
   box.style.cssText =
     'position:fixed;left:0;right:0;bottom:0;max-height:42vh;overflow:auto;z-index:99999;' +
     'background:rgba(0,0,0,.85);color:#9f9;font:11px/1.45 ui-monospace,monospace;' +
-    'padding:6px 8px;white-space:pre-wrap;word-break:break-all;border-top:1px solid #333'
+    'padding:6px 8px;white-space:pre-wrap;word-break:break-all;border-top:1px solid #333;' +
+    'pointer-events:none'
 
-  const title = document.createElement('div')
-  title.textContent = '— debug log (여기 탭하면 지움) —'
-  title.style.cssText = 'color:#888;cursor:pointer;margin-bottom:4px'
-  title.onclick = () => {
-    box.querySelectorAll('.l').forEach((n) => n.remove())
+  // 상단 툴바(지우기/닫기). box 는 클릭 통과이지만 이 버튼들만 pointer-events:auto 로 탭 가능.
+  const bar = document.createElement('div')
+  bar.style.cssText =
+    'position:sticky;top:0;display:flex;align-items:center;justify-content:space-between;' +
+    'gap:6px;margin-bottom:4px;color:#888'
+  const label = document.createElement('span')
+  label.textContent = '— debug log —'
+  const btns = document.createElement('span')
+  btns.style.cssText = 'display:flex;gap:6px'
+  const mkBtn = (text: string): HTMLButtonElement => {
+    const b = document.createElement('button')
+    b.textContent = text
+    b.style.cssText =
+      'pointer-events:auto;background:#222;color:#ccc;border:1px solid #444;border-radius:4px;' +
+      'font:11px ui-monospace,monospace;padding:3px 10px'
+    return b
   }
-  box.appendChild(title)
+  const clearBtn = mkBtn('지우기')
+  clearBtn.onclick = () => box.querySelectorAll('.l').forEach((n) => n.remove())
+  const hideBtn = mkBtn('✕ 닫기')
+  hideBtn.onclick = () => box.remove() // 이 세션 동안 오버레이 제거(다시 보려면 새로고침)
+  btns.append(clearBtn, hideBtn)
+  bar.append(label, btns)
+  box.appendChild(bar)
   document.body.appendChild(box)
 
   const add = (level: string, args: unknown[]): void => {
