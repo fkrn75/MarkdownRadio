@@ -93,6 +93,8 @@ export class SupertonicEngine implements RadioEngine {
   private modelProgressCb: ((p: ModelLoadProgress) => void) | null = null
   /** 모델 로딩 오류 외부 구독 콜백(UI 재시도 버튼 노출용) */
   private modelErrorCb: ((msg: string) => void) | null = null
+  /** 연속 합성 실패 횟수(워커 8스텝 자기복구까지 실패한 경우만 누적 — 죽은 GPU 표면화용). */
+  private consecutiveSynthFails = 0
   /** 사용 백엔드(webgpu|wasm) — 로딩 후 채워짐 */
   private backend: 'webgpu' | 'wasm' | null = null
   /** 모델 PCM 샘플레이트(load-done 에서 수신, 보통 44100). AudioBuffer 생성에 사용. */
@@ -428,6 +430,7 @@ export class SupertonicEngine implements RadioEngine {
           this.advance()
           return
         }
+        this.consecutiveSynthFails = 0 // 정상 합성 → 실패 누적 리셋
         void this.playBuffer(entry.buffer, idx)
         // 더블버퍼: 다음 speech 청크 미리 합성
         void this.ensureSynth(this.firstSynthIndexFrom(idx + 1))
@@ -435,6 +438,14 @@ export class SupertonicEngine implements RadioEngine {
       .catch((e) => {
         if (gen !== this.playGen) return
         console.warn('[SupertonicEngine] 합성 실패, 다음 청크로:', e)
+        // 워커 자기복구(8스텝 재시도)까지 실패한 경우만 여기 도달 → 죽은 GPU 의심.
+        // 연속 2회면 사용자에게 표면화(무음+멈춤 방치 방지). 성공 시 카운터는 리셋된다.
+        if (++this.consecutiveSynthFails >= 2) {
+          this.consecutiveSynthFails = 0
+          this.modelErrorCb?.(
+            '음성 합성이 반복 실패했습니다. 음질을 표준으로 낮추거나 "다시 시도"를 눌러보세요.',
+          )
+        }
         if (this.playing && !this.paused && this._position.chunkIndex === idx) this.advance()
       })
   }
@@ -445,9 +456,11 @@ export class SupertonicEngine implements RadioEngine {
     // [안드로이드/iOS] suspended 면 resume 이 "완료된 뒤" start 해야 한다.
     // void resume 후 곧바로 start 하면 resume 미완료 상태로 재생돼 소리가 안 난다(무음).
     // 특히 모델이 캐시된 2회차부터는 합성이 빨라 이 레이스가 더 잘 터진다.
+    let resumed = false
     if (ctx.state === 'suspended') {
       try {
         await ctx.resume()
+        resumed = true
       } catch {
         /* resume 실패해도 아래 start 는 시도(일부 환경은 그래도 소리가 난다) */
       }
@@ -470,7 +483,13 @@ export class SupertonicEngine implements RadioEngine {
       this.advance()
     }
     try {
-      src.start()
+      // ⚠️ [모바일] suspended→resume 직후엔 출력 디바이스 스핀업에 수십~수백 ms 가 걸려,
+      //    곧바로 start() 하면 버퍼 앞부분(speech)의 한두 음절이 삼켜진다('앞 음절 누락').
+      //    긴 문장은 합성이 길어 그 사이 context 가 suspend 되므로 이 경로를 자주 탄다.
+      //    resume 한 경우에만 살짝 미래(now+LEAD)에 예약해 스핀업이 무음 구간을 먹게 한다.
+      //    이미 running 이던 PC 등은 지연 0(기존과 동일).
+      const RESUME_LEAD_SEC = 0.18
+      src.start(resumed ? ctx.currentTime + RESUME_LEAD_SEC : 0)
     } catch (e) {
       console.warn('[SupertonicEngine] 재생 시작 실패, 다음 청크로:', e)
       this.currentSource = null
@@ -737,8 +756,9 @@ export class SupertonicEngine implements RadioEngine {
         this.modelLoadReject?.(new Error(msg.message))
         this.modelLoadResolve = this.modelLoadReject = null
         this.loadingPromise = null
-        // UI 재시도 버튼 노출용 콜백(retryLoad 로 다시 시도 가능)
-        this.modelErrorCb?.(msg.message)
+        // UI 재시도 버튼 노출용 콜백(retryLoad 로 다시 시도 가능). 배너 라벨이 일반화됐으므로
+        // 여기서 '모델 로딩 실패:' 접두를 직접 붙여 맥락을 유지한다(합성 실패 메시지와 구분).
+        this.modelErrorCb?.('모델 로딩 실패: ' + msg.message)
         return
       case 'synth-done': {
         const r = this.synthResolvers.get(msg.id)

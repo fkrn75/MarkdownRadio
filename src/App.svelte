@@ -373,7 +373,11 @@
     engine.setDocContext?.({ docId: doc.id, docHash: h })
     bookmarks = await listBookmarks(doc.id)
     // 이어듣기: 마지막으로 듣던 청크로 복원(없으면 0). 위치만 맞추고 재생은 사용자 조작에 맡긴다.
-    const resume = doc.lastChunkIndex && doc.lastChunkIndex > 0 ? doc.lastChunkIndex : 0
+    // ⚠️ 단, 끝까지 들어 lastChunkIndex 가 '마지막 청크'면 0(처음)으로 되돌린다.
+    //    안 그러면 재진입 시 맨 끝 청크에서 시작 → 재생하면 즉시 종료되어 '음성이 안 나온다'고
+    //    체감된다(끝낸 문서는 처음부터 다시 듣는 게 자연스럽다). chunks 는 위에서 이미 세팅됨.
+    const last = doc.lastChunkIndex ?? 0
+    const resume = last > 0 && last < chunks.length - 1 ? last : 0
     currentChunkIndex = resume
     if (resume > 0) engine.seekToChunk(resume)
     playing = false // 새 문서는 정지 상태로 진입(재생은 사용자 조작)
@@ -469,7 +473,7 @@
 
   {#if modelError}
     <div class="model-error" role="alert">
-      <span class="me-label">모델 로딩 실패: {modelError}</span>
+      <span class="me-label">{modelError}</span>
       <button class="me-retry" onclick={retryModel}>다시 시도</button>
     </div>
   {:else if modelProgress && modelProgress.ratio < 1}

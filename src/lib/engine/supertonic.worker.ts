@@ -515,8 +515,12 @@ async function synth(
 
   for (let i = 0; i < textList.length; i++) {
     const { wav, duration } = await infer([textList[i]], [langList[i]], style, totalStep, speed)
-    // duration[0] 까지만 유효 길이로 잘라 이어붙임(원본 main.js 의 slice 와 동일 취지)
-    const validLen = Math.min(wav.length, Math.floor(sampleRate * duration[0]))
+    // duration[0] 까지만 유효 길이로 잘라 이어붙임(원본 main.js 의 slice 와 동일 취지).
+    // ⚠️ floor 내림 + duration_predictor 의 과소예측이 겹치면 실제 음성의 꼬리가 잘린다.
+    //    긴 문장이 다중 세그먼트로 쪼개지면 '문장 중간'이 잘려 음절이 빠진 듯 들림.
+    //    작은 tail 패딩 + ceil 로 과소트림을 막는다(여분은 보코더 무음이라 무해).
+    const TAIL_PAD_SEC = 0.05
+    const validLen = Math.min(wav.length, Math.ceil(sampleRate * (duration[0] + TAIL_PAD_SEC)))
     const seg = wav.slice(0, validLen)
 
     if (wavCat.length === 0) {
@@ -530,6 +534,48 @@ async function synth(
   }
 
   return { pcm: Float32Array.from(wavCat), durationSec: durCat }
+}
+
+// ─────────────────────────────────────────────────────────────
+// 합성 자기복구 — 타임아웃 + 저스텝 1회 재시도
+// ─────────────────────────────────────────────────────────────
+/** 합성 시간 한계(ms). high(12)=긴 GPU 추론이 모바일 워치독을 넘겨 hang 하는 것을 끊는다. */
+function synthTimeoutMs(totalStep: number): number {
+  return Math.max(15000, totalStep * 2000)
+}
+
+/**
+ * synth() 를 타임아웃과 함께 실행하고, 타임아웃/실패 시 더 낮은 스텝으로 1회 자기복구한다.
+ * 모바일 GPU 가 고품질(12스텝)의 긴 추론에서 device lost/타임아웃으로 '무음'이 되는 것을,
+ * 표준(8스텝) 재시도로 자동 회복시킨다(그 청크만 한시적 품질↓ — 무음보다 낫다).
+ * id 는 취소 확인용.
+ */
+async function synthWithRecovery(
+  id: number,
+  text: string,
+  lang: string,
+  voiceUri: string,
+  totalStep: number,
+  speed: number,
+): Promise<{ pcm: Float32Array; durationSec: number }> {
+  const run = (step: number): Promise<{ pcm: Float32Array; durationSec: number }> =>
+    Promise.race([
+      synth(text, lang, voiceUri, step, speed),
+      new Promise<{ pcm: Float32Array; durationSec: number }>((_, reject) =>
+        setTimeout(() => reject(new Error(`합성 시간 초과(${step}스텝)`)), synthTimeoutMs(step)),
+      ),
+    ])
+  try {
+    return await run(totalStep)
+  } catch (e) {
+    if (cancelled.has(id)) throw e // 취소면 재시도 없음(상위에서 폐기)
+    // 고품질(>8)만 표준(8)으로 1회 강등 재시도. 이미 8 이하면 그대로 실패 전파.
+    if (totalStep > 8) {
+      console.warn('[worker] 합성 실패/초과 → 8스텝으로 1회 재시도:', e)
+      return await run(8)
+    }
+    throw e
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -558,7 +604,14 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
     const { id } = msg
     try {
       await ensureOrt()
-      const { pcm, durationSec } = await synth(msg.text, msg.lang, msg.voiceUri, msg.totalStep, msg.speed)
+      const { pcm, durationSec } = await synthWithRecovery(
+        id,
+        msg.text,
+        msg.lang,
+        msg.voiceUri,
+        msg.totalStep,
+        msg.speed,
+      )
       // 합성 도중 취소되었으면 결과 폐기
       if (cancelled.has(id)) {
         cancelled.delete(id)
