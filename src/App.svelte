@@ -379,7 +379,11 @@
     const last = doc.lastChunkIndex ?? 0
     const resume = last > 0 && last < chunks.length - 1 ? last : 0
     currentChunkIndex = resume
-    if (resume > 0) engine.seekToChunk(resume)
+    // load 는 더 이상 첫 청크를 prefetch 하지 않으므로, 시작 위치를 seek 해 '그 청크 하나만' 합성 +
+    // UI(위치/하이라이트) 동기화한다. resume=0 도 동일(chunk 0 단일 prefetch).
+    // ⚠️ 예전엔 load(chunk0 prefetch) + seekToChunk(resume) 가 '두 청크를 동시에' 합성해
+    //    모바일 GPU 가 동시 추론을 못 버텨 hang(이어듣기 재오픈 무음)했다 → 단일 prefetch 로 해소.
+    engine.seekToChunk(resume)
     playing = false // 새 문서는 정지 상태로 진입(재생은 사용자 조작)
     jumpOffset = undefined
     tab = 'listen'

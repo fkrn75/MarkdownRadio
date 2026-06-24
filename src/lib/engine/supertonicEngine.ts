@@ -229,9 +229,11 @@ export class SupertonicEngine implements RadioEngine {
     // 모델 로딩 보장(중복 방지)
     await this.ensureModel()
 
-    // 첫 speech 청크 prefetch(무음 청크면 건너뜀)
-    const first = this.firstSynthIndexFrom(0)
-    if (first >= 0) void this.ensureSynth(first)
+    // ⚠️ 여기서 첫 청크를 prefetch 하지 않는다. 호출부(openDocument)가 시작 위치로
+    //    seekToChunk(resume) 를 호출해 '그 청크 하나만' prefetch 한다.
+    //    예전엔 load 가 chunk 0 을, 직후 seekToChunk 가 resume 을 '각각' 합성해 두 합성이 동시에
+    //    GPU 추론을 돌렸고, 모바일에서 이 동시 추론이 hang(이어듣기 재오픈 무음)했다.
+    //    단일 prefetch 로 합쳐 그 동시성을 없앤다(동시 합성=모바일 GPU hang 의 또 다른 원인).
   }
 
   // ── RadioEngine: play ──────────────────────────────────────
