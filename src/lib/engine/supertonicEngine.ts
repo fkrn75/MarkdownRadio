@@ -96,6 +96,13 @@ export class SupertonicEngine implements RadioEngine {
   private modelErrorCb: ((msg: string) => void) | null = null
   /** 연속 합성 실패 횟수(워커 8스텝 자기복구까지 실패한 경우만 누적 — 죽은 GPU 표면화용). */
   private consecutiveSynthFails = 0
+  /**
+   * GPU device 오염(lost) 자동복구로 WASM(CPU) EP 에 고정되었는지.
+   * 세션 동안 sticky — WebGPU 재오염을 막는다(완전한 WebGPU 재시도는 페이지 새로고침으로만).
+   */
+  private forceWasm = false
+  /** 자동복구 진행 중 플래그(재진입·복구 루프 방지). */
+  private recovering = false
   /** 사용 백엔드(webgpu|wasm) — 로딩 후 채워짐 */
   private backend: 'webgpu' | 'wasm' | null = null
   /** 모델 PCM 샘플레이트(load-done 에서 수신, 보통 44100). AudioBuffer 생성에 사용. */
@@ -447,8 +454,18 @@ export class SupertonicEngine implements RadioEngine {
       .catch((e) => {
         if (gen !== this.playGen) return
         console.warn('[SupertonicEngine] 합성 실패, 다음 청크로:', e)
-        // 워커 자기복구(8스텝 재시도)까지 실패한 경우만 여기 도달 → 죽은 GPU 의심.
-        // 연속 2회면 사용자에게 표면화(무음+멈춤 방치 방지). 성공 시 카운터는 리셋된다.
+        // 합성 hang(워커 90s 타임아웃)이고 백엔드가 WebGPU 면 → GPU device 오염(lost)이 거의 확실.
+        // 리로드로도 복구가 안 되던 정체는 '새 워커'가 아니라 '리로드가 WebGPU 를 또 시도'한 것 →
+        // 워커를 재생성하며 WASM(CPU) 로 강제 전환해 자가복구한다(사이트 데이터 비우기 불필요).
+        // hang 은 1회만으로도 device 사망이 분명하므로 즉시 복구(2회 대기 = 180s 침묵 회피).
+        // ⚠️ '시간 초과' 는 워커 SYNTH_HANG 타임아웃 메시지(synthWithGuard)와 결합 — 함께 유지.
+        const isHang = e instanceof Error && e.message.includes('시간 초과')
+        if (isHang && this.backend === 'webgpu' && !this.forceWasm && !this.recovering) {
+          if (isDebug()) console.info('[MR] 합성 hang 감지 → device 오염 자동복구(WASM 전환) 트리거')
+          void this.recoverWorker() // 복구가 현재 청크부터 재생을 이어간다(여기서 advance 하지 않음)
+          return
+        }
+        // 그 외 일반 합성 오류: 연속 2회면 사용자에게 표면화(무음+멈춤 방치 방지). 성공 시 카운터 리셋.
         if (++this.consecutiveSynthFails >= 2) {
           this.consecutiveSynthFails = 0
           this.modelErrorCb?.(
@@ -729,8 +746,14 @@ export class SupertonicEngine implements RadioEngine {
     this.loadingPromise = new Promise<void>((resolve, reject) => {
       this.modelLoadResolve = resolve
       this.modelLoadReject = reject
-      const req: WorkerRequest = { type: 'load', repo: MODEL_REPO, revision: MODEL_REVISION }
-      if (isDebug()) console.info('[MR] 모델 load 요청 전송')
+      const req: WorkerRequest = {
+        type: 'load',
+        repo: MODEL_REPO,
+        revision: MODEL_REVISION,
+        forceWasm: this.forceWasm,
+      }
+      if (isDebug())
+        console.info('[MR] 모델 load 요청 전송' + (this.forceWasm ? ' (forceWasm=CPU 복구)' : ''))
       worker.postMessage(req)
     })
     return this.loadingPromise
@@ -853,6 +876,58 @@ export class SupertonicEngine implements RadioEngine {
   private track(type: 'chunk_play_start' | 'chunk_play_end' | 'jump_resolved', chunkIndex: number): void {
     if (!this.docCtx) return
     logEvent(type, { docId: this.docCtx.docId, docHash: this.docCtx.docHash, chunkIndex })
+  }
+
+  /**
+   * GPU device 오염 자동복구. 합성이 hang(워커 90s 타임아웃)하고 백엔드가 WebGPU 면 device lost 로
+   * 판단하고, 워커를 통째로 terminate+재생성한 뒤 WASM(CPU) EP 로만 다시 로드한다(forceWasm).
+   *
+   * 왜 '새 워커'가 아니라 forceWasm 인가: 페이지 리로드(=새 워커급)로도 복구가 안 됐던 이유는
+   * 재로딩이 다시 WebGPU 를 시도해 오염된 device 를 또 잡았기 때문. WASM 은 GPU 를 전혀 쓰지 않아
+   * 오염과 무관하게 CPU 로 소리를 낸다(단일스레드라 다소 느림). forceWasm 를 세션 동안 sticky 로 둬
+   * WebGPU 재오염을 막는다(완전한 WebGPU 재시도는 페이지 새로고침으로만).
+   * ONNX 바이트는 modelCache 가 캐시하므로 워커 재생성에도 재다운로드는 없다(세션 재생성만, 수 초).
+   */
+  private async recoverWorker(): Promise<void> {
+    if (this.recovering) return
+    this.recovering = true
+    this.forceWasm = true // 세션 동안 WASM 고정
+    this.consecutiveSynthFails = 0
+    if (isDebug()) console.info('[MR] device 오염 복구 시작 → 워커 재생성 + WASM 강제 로드')
+    // 현재 오디오/타이머 정지(stopSource 가 playGen++ 로 진행 중 stale 콜백 무효화) + 합성 캐시·진행 정리
+    this.stopSource()
+    if (this.silenceTimer) {
+      clearTimeout(this.silenceTimer)
+      this.silenceTimer = null
+    }
+    this.invalidateSynth()
+    // 오염된 ORT 런타임을 통째로 폐기(워커 terminate → getWorker 가 다음에 새 워커 생성)
+    if (this.worker) {
+      try {
+        this.worker.terminate()
+      } catch {
+        /* 이미 종료 */
+      }
+      this.worker = null
+    }
+    // 로딩 상태 리셋 → ensureModel 이 새 워커에 forceWasm load 전송
+    this.modelReady = false
+    this.loadingPromise = null
+    this.backend = null
+    this.modelLoadResolve = this.modelLoadReject = null
+    try {
+      await this.ensureModel()
+      if (isDebug()) console.info('[MR] device 복구 완료 backend=' + this.backend)
+      // 재생 중이었다면 현재 청크부터 이어서 재생(새 WASM 백엔드로 재합성). 위치/하이라이트는 유지.
+      if (this.playing && !this.paused) this.playCurrent()
+    } catch (e) {
+      if (isDebug()) console.warn('[MR] device 복구 실패', e)
+      this.modelErrorCb?.(
+        '자동복구에 실패했습니다. 브라우저의 사이트 데이터를 비우고 다시 시도해 주세요.',
+      )
+    } finally {
+      this.recovering = false
+    }
   }
 
   /** 엔진 폐기(워커 종료·컨텍스트 닫기). 통합 단계에서 엔진 교체 시 호출. */

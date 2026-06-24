@@ -245,7 +245,11 @@ let activeRevision = MODEL_REVISION
 // ─────────────────────────────────────────────────────────────
 // 모델 로딩 — main.js initializeModels + helper.loadTextToSpeech 포팅
 // ─────────────────────────────────────────────────────────────
-async function loadModels(repo: string, revision: string): Promise<'webgpu' | 'wasm'> {
+async function loadModels(
+  repo: string,
+  revision: string,
+  forceWasm = false,
+): Promise<'webgpu' | 'wasm'> {
   activeRepo = repo
   activeRevision = revision
 
@@ -301,6 +305,13 @@ async function loadModels(repo: string, revision: string): Promise<'webgpu' | 'w
     vectorEstOrt = await ortRT.InferenceSession.create(new Uint8Array(veBuf), opts)
     post({ type: 'load-progress', phase: 'session', label: '보코더 세션', ratio: 1 })
     vocoderOrt = await ortRT.InferenceSession.create(new Uint8Array(voBuf), opts)
+  }
+
+  // forceWasm: 오염된 GPU device 우회 복구 — WebGPU 시도 없이 곧장 CPU(WASM) 로 로드한다.
+  // (device lost 상태에서 webgpu 세션을 또 만들면 재오염/hang 하므로 그 경로를 아예 끊는다)
+  if (forceWasm) {
+    await createSessions(['wasm'])
+    return 'wasm'
   }
 
   try {
@@ -579,7 +590,11 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
   if (msg.type === 'load') {
     try {
       await ensureOrt()
-      const backend = await loadModels(msg.repo ?? MODEL_REPO, msg.revision ?? MODEL_REVISION)
+      const backend = await loadModels(
+        msg.repo ?? MODEL_REPO,
+        msg.revision ?? MODEL_REVISION,
+        msg.forceWasm ?? false,
+      )
       post({ type: 'load-done', sampleRate, backend })
     } catch (e) {
       post({ type: 'load-error', message: e instanceof Error ? e.message : String(e) })

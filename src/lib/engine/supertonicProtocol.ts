@@ -165,6 +165,12 @@ export type WorkerRequest =
       /** 모델 저장소(미지정 시 기본 MODEL_REPO) */
       repo?: string
       revision?: string
+      /**
+       * true 면 WebGPU 시도를 건너뛰고 WASM(CPU) EP 로만 로드한다.
+       * GPU device 오염(12스텝 등으로 device lost) 자동복구 시, 워커를 재생성하면서 이 플래그로
+       * WebGPU 재시도(재오염)를 막고 CPU 경로로 확실히 소리를 낸다(단일스레드라 다소 느림).
+       */
+      forceWasm?: boolean
     }
   | {
       type: 'synth'
