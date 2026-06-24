@@ -537,45 +537,32 @@ async function synth(
 }
 
 // ─────────────────────────────────────────────────────────────
-// 합성 자기복구 — 타임아웃 + 저스텝 1회 재시도
+// 합성 hang 가드 — 넉넉한 타임아웃(동시 재시도 없음)
 // ─────────────────────────────────────────────────────────────
-/** 합성 시간 한계(ms). high(12)=긴 GPU 추론이 모바일 워치독을 넘겨 hang 하는 것을 끊는다. */
-function synthTimeoutMs(totalStep: number): number {
-  return Math.max(15000, totalStep * 2000)
-}
-
 /**
- * synth() 를 타임아웃과 함께 실행하고, 타임아웃/실패 시 더 낮은 스텝으로 1회 자기복구한다.
- * 모바일 GPU 가 고품질(12스텝)의 긴 추론에서 device lost/타임아웃으로 '무음'이 되는 것을,
- * 표준(8스텝) 재시도로 자동 회복시킨다(그 청크만 한시적 품질↓ — 무음보다 낫다).
- * id 는 취소 확인용.
+ * device lost 등으로 ort.run() 이 영영 안 끝나면 synth() 가 영구 pending → 엔진 resolver 가
+ * 영구 대기(무음+멈춤)한다. 이를 막기 위해 '넉넉한' 타임아웃으로 끊어 synth-error 로 전환한다
+ * (엔진이 연속 실패를 표면화 → 사용자 '다시 시도'=워커 재생성=새 GPU device).
+ *
+ * ⚠️ 모바일 고품질(12스텝)은 한 청크 합성이 수십 초 걸릴 수 있다. 타임아웃을 짧게 잡으면
+ *    '느리지만 되던' 합성을 끊어 오히려 전부 무음이 된다(실측 회귀). 그래서 '진짜 hang' 만
+ *    걸리도록 넉넉히(90s) 잡고, 저스텝 동시 재시도는 하지 않는다 — 죽지 않은 원본 추론과 GPU 를
+ *    다퉈 둘 다 실패시킬 수 있어 모바일에서 역효과이기 때문이다.
  */
-async function synthWithRecovery(
-  id: number,
+const SYNTH_HANG_TIMEOUT_MS = 90000
+function synthWithGuard(
   text: string,
   lang: string,
   voiceUri: string,
   totalStep: number,
   speed: number,
 ): Promise<{ pcm: Float32Array; durationSec: number }> {
-  const run = (step: number): Promise<{ pcm: Float32Array; durationSec: number }> =>
-    Promise.race([
-      synth(text, lang, voiceUri, step, speed),
-      new Promise<{ pcm: Float32Array; durationSec: number }>((_, reject) =>
-        setTimeout(() => reject(new Error(`합성 시간 초과(${step}스텝)`)), synthTimeoutMs(step)),
-      ),
-    ])
-  try {
-    return await run(totalStep)
-  } catch (e) {
-    if (cancelled.has(id)) throw e // 취소면 재시도 없음(상위에서 폐기)
-    // 고품질(>8)만 표준(8)으로 1회 강등 재시도. 이미 8 이하면 그대로 실패 전파.
-    if (totalStep > 8) {
-      console.warn('[worker] 합성 실패/초과 → 8스텝으로 1회 재시도:', e)
-      return await run(8)
-    }
-    throw e
-  }
+  return Promise.race([
+    synth(text, lang, voiceUri, totalStep, speed),
+    new Promise<{ pcm: Float32Array; durationSec: number }>((_, reject) =>
+      setTimeout(() => reject(new Error('합성 시간 초과(응답 없음)')), SYNTH_HANG_TIMEOUT_MS),
+    ),
+  ])
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -604,8 +591,7 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
     const { id } = msg
     try {
       await ensureOrt()
-      const { pcm, durationSec } = await synthWithRecovery(
-        id,
+      const { pcm, durationSec } = await synthWithGuard(
         msg.text,
         msg.lang,
         msg.voiceUri,
