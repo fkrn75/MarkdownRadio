@@ -20,7 +20,7 @@
 
 import type { Chunk, EngineEvent, EnginePosition, RadioEngine } from '../types'
 import { logEvent } from '../instrumentation'
-import { isDebug, isForceWasm, isAutoRecover } from '../debug/flag'
+import { isDebug, isForceWasm } from '../debug/flag'
 import {
   DEFAULT_SPEED,
   DEFAULT_TOTAL_STEP,
@@ -462,15 +462,14 @@ export class SupertonicEngine implements RadioEngine {
       .catch((e) => {
         if (gen !== this.playGen) return
         console.warn('[SupertonicEngine] 합성 실패, 다음 청크로:', e)
-        // 합성 hang(워커 90s 타임아웃)이고 백엔드가 WebGPU 면 → GPU device 오염(lost)이 거의 확실.
-        // 워커를 재생성하며 WASM(CPU) 로 강제 전환해 자가복구할 수 있으나(사이트 데이터 비우기 불필요),
-        // ⚠️ 자동복구는 기본 OFF(`?autorecover=1` 로만 활성)이다. 폰에서 WASM(256MB 모델 4개 CPU 로드)이
-        //    느리거나 hang 하면 복구 대기 중 재생이 영구 정지(=재생 안 됨·안 넘어감)하는 역효과가 있어,
-        //    먼저 WASM viability(`?wasm=1`)를 검증한 뒤에만 켠다. OFF 일 때는 기존처럼 다음 청크로 advance.
+        // 합성 hang(워커 90s 타임아웃)이면 워커를 재생성(webgpu)해 자가복구한다.
+        // = 사용자가 찾은 워크어라운드(음질 기본↔고품질 토글로 엔진 재생성→소리남)의 자동화.
+        // WASM 강제전환은 폐기했다(폰 WASM 로드가 느려/hang 해 복구 대기 중 재생이 영구 정지하는 역효과).
+        // recoverWorker 가 재로딩에 타임아웃 가드를 둬 트랩을 막으므로 기본 ON 으로 둔다.
         // ⚠️ '시간 초과' 는 워커 SYNTH_HANG 타임아웃 메시지(synthWithGuard)와 결합 — 함께 유지.
         const isHang = e instanceof Error && e.message.includes('시간 초과')
-        if (isHang && this.backend === 'webgpu' && !this.forceWasm && !this.recovering && isAutoRecover()) {
-          if (isDebug()) console.info('[MR] 합성 hang 감지 → device 오염 자동복구(WASM 전환) 트리거')
+        if (isHang && this.backend === 'webgpu' && !this.forceWasm && !this.recovering) {
+          if (isDebug()) console.info('[MR] 합성 hang 감지 → 워커 재생성 자동복구 트리거')
           void this.recoverWorker() // 복구가 현재 청크부터 재생을 이어간다(여기서 advance 하지 않음)
           return
         }
@@ -900,9 +899,8 @@ export class SupertonicEngine implements RadioEngine {
   private async recoverWorker(): Promise<void> {
     if (this.recovering) return
     this.recovering = true
-    this.forceWasm = true // 세션 동안 WASM 고정
     this.consecutiveSynthFails = 0
-    if (isDebug()) console.info('[MR] device 오염 복구 시작 → 워커 재생성 + WASM 강제 로드')
+    if (isDebug()) console.info('[MR] 합성 hang → 워커 재생성(webgpu) 자동복구 시작')
     // 현재 오디오/타이머 정지(stopSource 가 playGen++ 로 진행 중 stale 콜백 무효화) + 합성 캐시·진행 정리
     this.stopSource()
     if (this.silenceTimer) {
@@ -910,7 +908,8 @@ export class SupertonicEngine implements RadioEngine {
       this.silenceTimer = null
     }
     this.invalidateSynth()
-    // 오염된 ORT 런타임을 통째로 폐기(워커 terminate → getWorker 가 다음에 새 워커 생성)
+    // hang 한 워커/ORT 런타임을 통째로 폐기(terminate → getWorker 가 다음에 새 워커 생성).
+    // = 사용자 워크어라운드(음질 기본↔고품질 토글로 엔진 재생성)와 동일한 복구를 자동화.
     if (this.worker) {
       try {
         this.worker.terminate()
@@ -919,20 +918,26 @@ export class SupertonicEngine implements RadioEngine {
       }
       this.worker = null
     }
-    // 로딩 상태 리셋 → ensureModel 이 새 워커에 forceWasm load 전송
+    // 로딩 상태 리셋 → ensureModel 이 새 워커에 load 전송(forceWasm=false → webgpu 재생성)
     this.modelReady = false
     this.loadingPromise = null
     this.backend = null
     this.modelLoadResolve = this.modelLoadReject = null
     try {
-      await this.ensureModel()
-      if (isDebug()) console.info('[MR] device 복구 완료 backend=' + this.backend)
-      // 재생 중이었다면 현재 청크부터 이어서 재생(새 WASM 백엔드로 재합성). 위치/하이라이트는 유지.
+      // ⚠️ 재로딩도 hang 하면 영구 대기(트랩)하지 않도록 타임아웃(30s)을 건다(이전 WASM 트랩 사고 교훈).
+      await Promise.race([
+        this.ensureModel(), // forceWasm=false → 새 webgpu 워커로 재생성
+        new Promise<void>((_, reject) =>
+          setTimeout(() => reject(new Error('복구 로딩 시간 초과')), 30000),
+        ),
+      ])
+      if (isDebug()) console.info('[MR] 자동복구 완료 backend=' + this.backend)
+      // 재생 중이었다면 현재 청크부터 이어서 재생(위치/하이라이트 유지).
       if (this.playing && !this.paused) this.playCurrent()
     } catch (e) {
-      if (isDebug()) console.warn('[MR] device 복구 실패', e)
+      if (isDebug()) console.warn('[MR] 자동복구 실패', e)
       this.modelErrorCb?.(
-        '자동복구에 실패했습니다. 브라우저의 사이트 데이터를 비우고 다시 시도해 주세요.',
+        '재생을 복구하지 못했습니다. 새로고침하거나 음질(기본↔고품질)을 한 번 바꿔 보세요.',
       )
     } finally {
       this.recovering = false
