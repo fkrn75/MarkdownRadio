@@ -20,6 +20,7 @@
 
 import type { Chunk, EngineEvent, EnginePosition, RadioEngine } from '../types'
 import { logEvent } from '../instrumentation'
+import { isDebug } from '../debug/flag'
 import {
   DEFAULT_SPEED,
   DEFAULT_TOTAL_STEP,
@@ -406,10 +407,10 @@ export class SupertonicEngine implements RadioEngine {
 
     // 합성 결과를 받아 재생(없으면 합성 대기). 현재 세대를 캡처해 stale 콜백 무시.
     const gen = this.playGen
-    const t0 = import.meta.env.DEV ? performance.now() : 0
+    const t0 = isDebug() ? performance.now() : 0
     void this.ensureSynth(idx)
       .then((entry) => {
-        if (import.meta.env.DEV) {
+        if (isDebug()) {
           console.info(
             '[diag] synth idx',
             idx,
@@ -473,6 +474,7 @@ export class SupertonicEngine implements RadioEngine {
     src.connect(ctx.destination)
     this.currentSource = src
 
+    if (isDebug()) console.info('[MR] play chunk=' + idx + ' ctx=' + ctx.state + (resumed ? ' (resumed)' : ''))
     this.track('chunk_play_start', idx)
     src.onended = () => {
       // 우리가 stop() 한 소스의 onended 는 무시(currentSource 교체로 식별)
@@ -646,6 +648,10 @@ export class SupertonicEngine implements RadioEngine {
       totalStep,
       speed,
     }
+    if (isDebug())
+      console.info(
+        '[MR] synth 요청 chunk=' + chunkIndex + ' id=' + id + ' step=' + totalStep + ' len=' + text.length,
+      )
     worker.postMessage(req)
 
     // 응답에서 PCM → AudioBuffer 변환(요청 시점의 speed/voice/품질/rateScale 메타 고정)
@@ -716,6 +722,7 @@ export class SupertonicEngine implements RadioEngine {
       this.modelLoadResolve = resolve
       this.modelLoadReject = reject
       const req: WorkerRequest = { type: 'load', repo: MODEL_REPO, revision: MODEL_REVISION }
+      if (isDebug()) console.info('[MR] 모델 load 요청 전송')
       worker.postMessage(req)
     })
     return this.loadingPromise
@@ -749,6 +756,7 @@ export class SupertonicEngine implements RadioEngine {
         this.modelReady = true
         this.backend = msg.backend
         this.modelSampleRate = msg.sampleRate
+        if (isDebug()) console.info('[MR] load-done backend=' + msg.backend + ' sr=' + msg.sampleRate)
         this.modelLoadResolve?.()
         this.modelLoadResolve = this.modelLoadReject = null
         return
@@ -764,6 +772,7 @@ export class SupertonicEngine implements RadioEngine {
         const r = this.synthResolvers.get(msg.id)
         if (!r) return // 취소됨
         this.synthResolvers.delete(msg.id)
+        if (isDebug()) console.info('[MR] synth-done id=' + msg.id + ' pcm=' + msg.pcm.length + 'smp')
         // 워커가 PCM 을 cfgs.ae.sample_rate(보통 44100)로 생성하므로 그 값으로 버퍼를 만든다.
         // AudioContext 네이티브 레이트(흔히 48000)와 달라도 createBuffer 의 sampleRate 인자로
         // 정확히 지정하면 브라우저가 재생 시 자동 리샘플링한다(피치 정상).
@@ -783,6 +792,7 @@ export class SupertonicEngine implements RadioEngine {
         const r = this.synthResolvers.get(msg.id)
         if (!r) return
         this.synthResolvers.delete(msg.id)
+        if (isDebug()) console.info('[MR] synth-error id=' + msg.id + ' ' + msg.message)
         r.reject(new Error(msg.message))
         return
       }
