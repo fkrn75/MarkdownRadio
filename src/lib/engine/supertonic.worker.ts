@@ -239,6 +239,14 @@ const styleCache = new Map<string, StyleTensors>()
 /** 취소된 합성 id 집합(점프/정지 시 추가 → 결과 폐기). */
 const cancelled = new Set<number>()
 
+/**
+ * 합성 직렬화 체인. 합성 요청을 '한 번에 하나씩' 처리해 두 개 이상의 ortRT.run() 이 동시에
+ * GPU 추론을 돌리는 것을 막는다 — 동시 추론은 모바일 GPU hang(무음)의 주원인이다(빠른 seek·
+ * 이어듣기 재오픈 등에서 '취소됐지만 아직 run() 중인 합성'과 '새 합성'이 GPU 에서 겹침).
+ * 각 synth 요청은 이 체인 뒤에 이어 붙어 순차 실행된다.
+ */
+let synthChain: Promise<void> = Promise.resolve()
+
 let activeRepo = MODEL_REPO
 let activeRevision = MODEL_REVISION
 
@@ -603,30 +611,39 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
   }
 
   if (msg.type === 'synth') {
-    const { id } = msg
-    try {
-      await ensureOrt()
-      const { pcm, durationSec } = await synthWithGuard(
-        msg.text,
-        msg.lang,
-        msg.voiceUri,
-        msg.totalStep,
-        msg.speed,
-      )
-      // 합성 도중 취소되었으면 결과 폐기
-      if (cancelled.has(id)) {
-        cancelled.delete(id)
-        return
-      }
-      // PCM 버퍼는 transferable 로 넘겨 복사 비용 제거
-      post({ type: 'synth-done', id, pcm, durationSec }, [pcm.buffer])
-    } catch (e) {
-      if (cancelled.has(id)) {
-        cancelled.delete(id)
-        return
-      }
-      post({ type: 'synth-error', id, message: e instanceof Error ? e.message : String(e) })
-    }
+    const { id, text, lang, voiceUri, totalStep, speed } = msg
+    // ⚠️ 합성 직렬화: 이전 합성이 끝난 뒤에 시작한다. onmessage 는 async 라 여러 synth 가 await 중
+    //    인터리브되는데, 그러면 두 개 이상의 ortRT.run() 이 GPU 에서 '동시에' 돌아 모바일 GPU 가
+    //    hang(무음) 한다(빠른 seek·이어듣기 재오픈에서 취소된 합성의 run() 이 새 합성과 겹치는 게 주범).
+    //    한 번에 하나씩만 돌리면 그 동시성이 사라진다.
+    synthChain = synthChain
+      .then(async () => {
+        // 시작 전에 이미 취소(점프/정지)됐으면 합성 자체를 건너뛴다 — 불필요한 GPU 작업·지연 제거.
+        if (cancelled.has(id)) {
+          cancelled.delete(id)
+          return
+        }
+        try {
+          await ensureOrt()
+          const { pcm, durationSec } = await synthWithGuard(text, lang, voiceUri, totalStep, speed)
+          // 합성 도중 취소되었으면 결과 폐기
+          if (cancelled.has(id)) {
+            cancelled.delete(id)
+            return
+          }
+          // PCM 버퍼는 transferable 로 넘겨 복사 비용 제거
+          post({ type: 'synth-done', id, pcm, durationSec }, [pcm.buffer])
+        } catch (e) {
+          if (cancelled.has(id)) {
+            cancelled.delete(id)
+            return
+          }
+          post({ type: 'synth-error', id, message: e instanceof Error ? e.message : String(e) })
+        }
+      })
+      .catch(() => {
+        /* 체인이 예외로 끊기지 않게(다음 합성이 계속 직렬화되도록) */
+      })
     return
   }
 }
