@@ -20,7 +20,7 @@
 
 import type { Chunk, EngineEvent, EnginePosition, RadioEngine } from '../types'
 import { logEvent } from '../instrumentation'
-import { isDebug } from '../debug/flag'
+import { isDebug, isForceWasm, isAutoRecover } from '../debug/flag'
 import {
   DEFAULT_SPEED,
   DEFAULT_TOTAL_STEP,
@@ -144,6 +144,12 @@ export class SupertonicEngine implements RadioEngine {
 
   constructor(ctx?: EngineDocContext) {
     if (ctx) this.docCtx = ctx
+    // ?wasm=1 디버그 스위치: 처음부터 WASM(CPU) EP 로 로드(WebGPU 건너뜀).
+    // 폰에서 WASM 합성이 실제로 소리를 내는지/속도를 직접 검증하기 위함(자동복구의 전제 확인).
+    if (isForceWasm()) {
+      this.forceWasm = true
+      if (isDebug()) console.info('[MR] ?wasm=1 → 처음부터 WASM(CPU) 강제 로드')
+    }
   }
 
   // ── 위치 ───────────────────────────────────────────────────
@@ -455,12 +461,13 @@ export class SupertonicEngine implements RadioEngine {
         if (gen !== this.playGen) return
         console.warn('[SupertonicEngine] 합성 실패, 다음 청크로:', e)
         // 합성 hang(워커 90s 타임아웃)이고 백엔드가 WebGPU 면 → GPU device 오염(lost)이 거의 확실.
-        // 리로드로도 복구가 안 되던 정체는 '새 워커'가 아니라 '리로드가 WebGPU 를 또 시도'한 것 →
-        // 워커를 재생성하며 WASM(CPU) 로 강제 전환해 자가복구한다(사이트 데이터 비우기 불필요).
-        // hang 은 1회만으로도 device 사망이 분명하므로 즉시 복구(2회 대기 = 180s 침묵 회피).
+        // 워커를 재생성하며 WASM(CPU) 로 강제 전환해 자가복구할 수 있으나(사이트 데이터 비우기 불필요),
+        // ⚠️ 자동복구는 기본 OFF(`?autorecover=1` 로만 활성)이다. 폰에서 WASM(256MB 모델 4개 CPU 로드)이
+        //    느리거나 hang 하면 복구 대기 중 재생이 영구 정지(=재생 안 됨·안 넘어감)하는 역효과가 있어,
+        //    먼저 WASM viability(`?wasm=1`)를 검증한 뒤에만 켠다. OFF 일 때는 기존처럼 다음 청크로 advance.
         // ⚠️ '시간 초과' 는 워커 SYNTH_HANG 타임아웃 메시지(synthWithGuard)와 결합 — 함께 유지.
         const isHang = e instanceof Error && e.message.includes('시간 초과')
-        if (isHang && this.backend === 'webgpu' && !this.forceWasm && !this.recovering) {
+        if (isHang && this.backend === 'webgpu' && !this.forceWasm && !this.recovering && isAutoRecover()) {
           if (isDebug()) console.info('[MR] 합성 hang 감지 → device 오염 자동복구(WASM 전환) 트리거')
           void this.recoverWorker() // 복구가 현재 청크부터 재생을 이어간다(여기서 advance 하지 않음)
           return
