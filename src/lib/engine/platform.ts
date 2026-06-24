@@ -14,3 +14,14 @@ export function isIOS(): boolean {
     (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
   )
 }
+
+/**
+ * 모바일(안드로이드·iOS 등 폰/태블릿) 감지.
+ * 무거운 GPU 추론(예: Supertonic 12스텝)이 모바일 GPU 워치독을 넘겨 hang 하는 것을 막기 위해
+ * '안전 상한' 적용 등에 쓴다. 터치 데스크탑 오탐을 피하려 maxTouchPoints 단독이 아닌
+ * userAgent(Android/Mobile 등)+iOS 로 판별한다.
+ */
+export function isMobile(): boolean {
+  if (typeof navigator === 'undefined') return false
+  return isIOS() || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)
+}

@@ -32,7 +32,7 @@ import {
   type WorkerRequest,
   type WorkerResponse,
 } from './supertonicProtocol'
-import { isIOS } from './platform'
+import { isIOS, isMobile } from './platform'
 
 export interface EngineDocContext {
   docId: string
@@ -359,7 +359,15 @@ export class SupertonicEngine implements RadioEngine {
    * (setRate 와 동일한 보수적 정책: 현재 청크는 건드리지 않음)
    */
   setTotalStep(step: number): void {
-    const clamped = Math.max(1, Math.min(Math.round(step), 30))
+    let clamped = Math.max(1, Math.min(Math.round(step), 30))
+    // [모바일] 12스텝(고품질 프리셋)은 모바일 GPU 워치독을 넘겨 합성이 hang(무음+멈춤)한다(실측 확인).
+    // 폰/태블릿에서는 GPU 가 감당하는 안전 상한(8=표준)으로 자동 제한한다 — 고품질을 골라도 무음
+    // 대신 안정적으로 소리가 난다(8↔12 의 음질 차이는 미미). 데스크탑은 제한 없음.
+    const MOBILE_MAX_STEP = 8
+    if (isMobile() && clamped > MOBILE_MAX_STEP) {
+      if (isDebug()) console.info('[MR] 모바일 step 상한 적용 ' + clamped + '→' + MOBILE_MAX_STEP)
+      clamped = MOBILE_MAX_STEP
+    }
     if (clamped === this.totalStep) return
     this.totalStep = clamped
     // 현재 청크는 그대로 두고, 이후(prefetch) 캐시 중 품질이 다른 것을 비워 재합성 유도
